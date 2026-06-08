@@ -27,6 +27,7 @@ import (
 	"github.com/metacubex/mihomo/component/resource"
 	"github.com/metacubex/mihomo/component/sniffer"
 	tlsC "github.com/metacubex/mihomo/component/tls"
+	"github.com/metacubex/mihomo/component/tracer"
 	"github.com/metacubex/mihomo/component/trie"
 	"github.com/metacubex/mihomo/component/updater"
 	"github.com/metacubex/mihomo/config"
@@ -97,6 +98,7 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	}
 
 	updateExperimental(cfg.Experimental)
+	updateTracing(cfg.Experimental)
 	updateUsers(cfg.Users)
 	updateProxies(cfg.Proxies, cfg.Providers)
 	updateRules(cfg.Rules, cfg.SubRules, cfg.RuleProviders)
@@ -222,6 +224,10 @@ func updateExperimental(c *config.Experimental) {
 		_ = os.Setenv("QUIC_GO_DISABLE_ECN", strconv.FormatBool(true))
 	}
 	dialer.GetIP4PEnable(c.IP4PEnable)
+}
+
+func updateTracing(c *config.Experimental) {
+	tracer.SetEnabled(c.Tracing)
 }
 
 func updateNTP(c *config.NTP) {

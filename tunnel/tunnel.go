@@ -20,6 +20,7 @@ import (
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/component/slowdown"
 	"github.com/metacubex/mihomo/component/sniffer"
+	"github.com/metacubex/mihomo/component/tracer"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/constant/features"
 	"github.com/metacubex/mihomo/constant/provider"
@@ -399,6 +400,10 @@ func handleUDPConn(packet C.PacketAdapter) {
 				return nil, nil, err
 			}
 
+			if ps, ok := sender.(*packetSender); ok {
+				ps.proxyName = proxy.Name()
+			}
+
 			ctx, cancel := context.WithTimeout(context.Background(), C.DefaultUDPTimeout)
 			defer cancel()
 			rawPc, err := retry(ctx, func(ctx context.Context) (C.PacketConn, error) {
@@ -448,6 +453,7 @@ func handleTCPConn(connCtx C.ConnContext) {
 		_ = conn.Close()
 	}(connCtx.Conn())
 
+	startTime := time.Now()
 	metadata := connCtx.Metadata()
 	if !metadata.Valid() {
 		log.Warnln("[Metadata] not valid: %#v", metadata)
@@ -494,6 +500,16 @@ func handleTCPConn(connCtx C.ConnContext) {
 		log.Warnln("[Metadata] parse failed: %s", err.Error())
 		return
 	}
+
+	tracer.Connect(
+		connCtx.ID().String(),
+		metadata.SourceDetail(),
+		metadata.RemoteAddress(),
+		metadata.Host,
+		metadata.Process,
+		metadata.ProcessPath,
+		metadata.InName,
+	)
 
 	dialMetadata := metadata
 	if len(metadata.Host) > 0 {
@@ -549,8 +565,20 @@ func handleTCPConn(connCtx C.ConnContext) {
 	}
 	logMetadata(metadata, rule, remoteConn)
 
+	tracer.ProxyDial(
+		connCtx.ID().String(),
+		proxy.Name(),
+		proxy.Type().String(),
+		proxy.Addr(),
+		remoteConn.LocalAddr().String(),
+	)
+
 	remoteConn = statistic.NewTCPTracker(remoteConn, statistic.DefaultManager, metadata, rule, int64(peekLen), 0, true)
 	defer func(remoteConn C.Conn) {
+		if tt, ok := remoteConn.(statistic.Tracker); ok {
+			info := tt.Info()
+			tracer.Close(connCtx.ID().String(), info.UploadTotal.Load(), info.DownloadTotal.Load(), time.Since(startTime))
+		}
 		_ = remoteConn.Close()
 	}(remoteConn)
 

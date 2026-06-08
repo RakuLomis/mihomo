@@ -5,20 +5,33 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/common/lru"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/resolver"
+	"github.com/metacubex/mihomo/component/tracer"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 )
 
 type packetSender struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	ch     chan C.PacketAdapter
-	cache  *lru.LruCache[string, netip.Addr]
+	ctx       context.Context
+	cancel    context.CancelFunc
+	ch        chan C.PacketAdapter
+	cache     *lru.LruCache[string, netip.Addr]
+	seqOut    atomic.Uint32
+	seqIn     atomic.Uint32
+	proxyName string
+}
+
+func (s *packetSender) nextOutSeq() int {
+	return int(s.seqOut.Add(1))
+}
+
+func (s *packetSender) nextInSeq() int {
+	return int(s.seqIn.Add(1))
 }
 
 // newPacketSender return a chan based C.PacketSender
@@ -46,7 +59,16 @@ func (s *packetSender) Process(pc C.PacketConn, proxy C.WriteBackProxy) {
 			if err := s.ResolveUDP(packet.Metadata()); err != nil {
 				log.Warnln("[UDP] Resolve Ip error: %s", err)
 			} else {
-				_ = handleUDPToRemote(packet, pc, packet.Metadata())
+				md := packet.Metadata()
+				tracer.UdpOut(
+					packet.Key(),
+					s.nextOutSeq(),
+					md.SourceDetail(),
+					md.RemoteAddress(),
+					len(packet.Data()),
+					s.proxyName,
+				)
+				_ = handleUDPToRemote(packet, pc, md)
 			}
 			packet.Drop()
 		}
@@ -127,6 +149,11 @@ func handleUDPToLocal(writeBack C.WriteBack, pc N.EnhancePacketConn, sender C.Pa
 		natTable.Delete(key)
 	}()
 
+	var inSeq func() int
+	if ps, ok := sender.(*packetSender); ok {
+		inSeq = ps.nextInSeq
+	}
+
 	for {
 		_ = pc.SetReadDeadline(time.Now().Add(udpTimeout))
 		data, put, from, err := pc.WaitReadFrom()
@@ -155,6 +182,12 @@ func handleUDPToLocal(writeBack C.WriteBack, pc N.EnhancePacketConn, sender C.Pa
 				}
 			}
 		}
+
+		seq := 0
+		if inSeq != nil {
+			seq = inSeq()
+		}
+		tracer.UdpIn(key, seq, fromUDPAddr.String(), len(data))
 
 		_, err = writeBack.WriteBack(data, fromUDPAddr)
 		if put != nil {

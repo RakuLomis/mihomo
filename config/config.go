@@ -121,6 +121,7 @@ type Experimental struct {
 	QUICGoDisableGSO bool
 	QUICGoDisableECN bool
 	IP4PEnable       bool
+	Tracing          bool
 }
 
 // IPTables config
@@ -319,6 +320,7 @@ type RawExperimental struct {
 	QUICGoDisableGSO bool     `yaml:"quic-go-disable-gso"`
 	QUICGoDisableECN bool     `yaml:"quic-go-disable-ecn"`
 	IP4PEnable       bool     `yaml:"dialer-ip4p-convert"`
+	Tracing          bool     `yaml:"tracing"`
 }
 
 type RawProfile struct {
@@ -773,6 +775,7 @@ func parseExperimental(cfg *RawConfig) (*Experimental, error) {
 		QUICGoDisableGSO: cfg.Experimental.QUICGoDisableGSO,
 		QUICGoDisableECN: cfg.Experimental.QUICGoDisableECN,
 		IP4PEnable:       cfg.Experimental.IP4PEnable,
+		Tracing:          cfg.Experimental.Tracing,
 	}, nil
 }
 

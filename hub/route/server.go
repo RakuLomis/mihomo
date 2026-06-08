@@ -131,6 +131,7 @@ func router(isDebug bool, secret string, dohServer string, cors Cors) *chi.Mux {
 			r.Mount("/restart", restartRouter())
 		}
 		r.Mount("/upgrade", upgradeRouter())
+		r.Mount("/experimental", experimentalRouter())
 		addExternalRouters(r)
 
 	})
