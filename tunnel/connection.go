@@ -14,6 +14,7 @@ import (
 	"github.com/metacubex/mihomo/component/tracer"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 )
 
 type packetSender struct {
@@ -142,7 +143,12 @@ func handleUDPToRemote(packet C.UDPPacket, pc C.PacketConn, metadata *C.Metadata
 }
 
 func handleUDPToLocal(writeBack C.WriteBack, pc N.EnhancePacketConn, sender C.PacketSender, key string, oAddrPort netip.AddrPort, fAddr netip.Addr) {
+	startTime := time.Now()
 	defer func() {
+		if ti, ok := pc.(interface{ Info() *statistic.TrackerInfo }); ok {
+			info := ti.Info()
+			tracer.UDPCloseFn(key, info.UploadTotal.Load(), info.DownloadTotal.Load(), time.Since(startTime))
+		}
 		sender.Close()
 		_ = pc.Close()
 		closeAllLocalCoon(key)

@@ -18,6 +18,8 @@ const (
 	TCPClose       EventType = "tcp_close"
 	UDPOut         EventType = "udp_out"
 	UDPIn          EventType = "udp_in"
+	UDPConnect     EventType = "udp_connect"
+	UDPClose       EventType = "udp_close"
 )
 
 type event struct {
@@ -165,5 +167,28 @@ func UdpIn(key string, seq int, from string, length int) {
 	t.write(event{
 		Ts: now(), Type: UDPIn, ConnKey: key, Seq: seq,
 		From: from, Len: length,
+	})
+}
+
+func UDPConnectFn(key, src, dst, host, process, processPath, inName string) {
+	t := globalTracer
+	if !t.enabled.Load() {
+		return
+	}
+	t.write(event{
+		Ts: now(), Type: UDPConnect, ConnKey: key,
+		Src: src, Dst: dst, Host: host,
+		Process: process, ProcessPath: processPath, InName: inName,
+	})
+}
+
+func UDPCloseFn(key string, bytesUp, bytesDown int64, duration time.Duration) {
+	t := globalTracer
+	if !t.enabled.Load() {
+		return
+	}
+	t.write(event{
+		Ts: now(), Type: UDPClose, ConnKey: key,
+		BytesUp: bytesUp, BytesDown: bytesDown, DurationMs: duration.Milliseconds(),
 	})
 }

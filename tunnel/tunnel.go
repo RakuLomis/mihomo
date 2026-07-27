@@ -388,6 +388,16 @@ func handleUDPConn(packet C.PacketAdapter) {
 		return sender
 	})
 	if !loaded {
+		tracer.UDPConnectFn(
+			key,
+			metadata.SourceDetail(),
+			metadata.RemoteAddress(),
+			metadata.Host,
+			metadata.Process,
+			metadata.ProcessPath,
+			metadata.InName,
+		)
+
 		dial := func() (C.PacketConn, C.WriteBackProxy, error) {
 			if err := sender.ResolveUDP(metadata); err != nil {
 				log.Warnln("[UDP] Resolve Ip error: %s", err)
