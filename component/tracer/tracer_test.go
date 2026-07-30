@@ -1,0 +1,237 @@
+package tracer
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"net"
+	"path/filepath"
+	"sync"
+	"testing"
+)
+
+func boolPtr(v bool) *bool       { return &v }
+func stringPtr(v string) *string { return &v }
+
+func decodeEvents(t *testing.T, data []byte) []event {
+	t.Helper()
+	lines := bytes.Split(bytes.TrimSpace(data), []byte{'\n'})
+	if len(lines) == 1 && len(lines[0]) == 0 {
+		return nil
+	}
+	events := make([]event, 0, len(lines))
+	for _, line := range lines {
+		var e event
+		if err := json.Unmarshal(line, &e); err != nil {
+			t.Fatalf("decode event %q: %v", line, err)
+		}
+		events = append(events, e)
+	}
+	return events
+}
+
+func TestTCPConfiguredStdoutCompletesAfterDisable(t *testing.T) {
+	var output bytes.Buffer
+	tr := newTracer(&output)
+	if err := tr.configure(ConfigPatch{Enabled: boolPtr(true)}); err != nil {
+		t.Fatal(err)
+	}
+
+	session := tr.beginTCP("tcp-1", "127.0.0.1:1000", "1.1.1.1:443", "example.com", "curl", "/usr/bin/curl", "mixed")
+	tr.enabled.Store(false)
+	session.ProxyDial("proxy", "ss", "proxy.example:443", EndpointInfo{
+		Local: "192.0.2.1:2000", Remote: "198.51.100.1:443", Scope: "physical", Source: "socket",
+	})
+	session.Close(12, 34, StatusClosed, "", nil)
+	session.Close(99, 99, StatusClosed, "", nil)
+
+	events := decodeEvents(t, output.Bytes())
+	if len(events) != 3 {
+		t.Fatalf("got %d events, want 3", len(events))
+	}
+	if events[0].Type != TCPConnect || events[1].Type != TCPProxyDial || events[2].Type != TCPClose {
+		t.Fatalf("unexpected lifecycle: %s, %s, %s", events[0].Type, events[1].Type, events[2].Type)
+	}
+	if events[1].OutDst != "198.51.100.1:443" || events[1].EndpointScope != "physical" {
+		t.Fatalf("unexpected proxy endpoints: %+v", events[1])
+	}
+	if events[2].Status != StatusClosed || events[2].BytesUp != 12 || events[2].BytesDown != 34 {
+		t.Fatalf("unexpected close event: %+v", events[2])
+	}
+	status := tr.status()
+	if status.Output != "" || status.ActiveSessions != 0 {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
+func TestUDPPacketSequenceAndProxySurviveSessionState(t *testing.T) {
+	var output bytes.Buffer
+	tr := newTracer(&output)
+	tr.enabled.Store(true)
+
+	session := tr.beginUDP("udp-key", "127.0.0.1:1000", "8.8.8.8:53", "dns.google", "dig", "/usr/bin/dig", "tun")
+	session.ProxyDial("quic-proxy", "tuic", "proxy.example:443", EndpointInfo{Scope: "logical"})
+	session.PacketOut("127.0.0.1:1000", "8.8.8.8:53", 10)
+	session.PacketOut("127.0.0.1:1000", "8.8.8.8:53", 20)
+	session.PacketIn("8.8.8.8:53", 30)
+	tr.enabled.Store(false)
+	session.PacketOut("127.0.0.1:1000", "8.8.8.8:53", 40)
+	session.Close(30, 30, StatusClosed, "", nil)
+
+	events := decodeEvents(t, output.Bytes())
+	if len(events) != 6 {
+		t.Fatalf("got %d events, want 6", len(events))
+	}
+	if events[2].Type != UDPOut || events[2].Seq != 1 || events[2].Proxy != "quic-proxy" {
+		t.Fatalf("unexpected first udp_out: %+v", events[2])
+	}
+	if events[3].Type != UDPOut || events[3].Seq != 2 {
+		t.Fatalf("unexpected second udp_out: %+v", events[3])
+	}
+	if events[4].Type != UDPIn || events[4].Seq != 1 {
+		t.Fatalf("unexpected udp_in: %+v", events[4])
+	}
+	if events[5].Type != UDPClose || events[5].Status != StatusClosed {
+		t.Fatalf("unexpected udp_close: %+v", events[5])
+	}
+}
+
+func TestConfigureFailureIsAtomic(t *testing.T) {
+	var stdout bytes.Buffer
+	tr := newTracer(&stdout)
+	validPath := filepath.Join(t.TempDir(), "trace.jsonl")
+	if err := tr.configure(ConfigPatch{Enabled: boolPtr(false), Output: stringPtr(validPath)}); err != nil {
+		t.Fatal(err)
+	}
+	before := tr.status()
+
+	invalidPath := filepath.Join(t.TempDir(), "missing", "trace.jsonl")
+	if err := tr.configure(ConfigPatch{Enabled: boolPtr(true), Output: &invalidPath}); err == nil {
+		t.Fatal("expected invalid output path to fail")
+	}
+	after := tr.status()
+	if after.Enabled != before.Enabled || after.Output != before.Output {
+		t.Fatalf("configuration changed after failed patch: before=%+v after=%+v", before, after)
+	}
+}
+
+type errorWriter struct{}
+
+func (errorWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+func TestWriteFailureDisablesTracingAndIsObservable(t *testing.T) {
+	tr := newTracer(errorWriter{})
+	tr.enabled.Store(true)
+	session := tr.beginTCP("tcp-error", "src", "dst", "", "", "", "")
+	session.Close(0, 0, StatusClosed, "", nil)
+
+	status := tr.status()
+	if status.Enabled || status.WriteErrors != 1 || status.LastError != "disk full" || status.ActiveSessions != 0 {
+		t.Fatalf("unexpected failure status: %+v", status)
+	}
+	if err := tr.configure(ConfigPatch{Enabled: boolPtr(true)}); err == nil {
+		t.Fatal("expected re-enable without replacing failed output to fail")
+	}
+	recoveryPath := filepath.Join(t.TempDir(), "recovered.jsonl")
+	if err := tr.configure(ConfigPatch{Enabled: boolPtr(true), Output: &recoveryPath}); err != nil {
+		t.Fatalf("replace failed output: %v", err)
+	}
+	status = tr.status()
+	if !status.Enabled || status.LastError != "" || status.WriteErrors != 1 {
+		t.Fatalf("unexpected recovered status: %+v", status)
+	}
+}
+
+func TestTCPDialFailureClosesLifecycle(t *testing.T) {
+	var output bytes.Buffer
+	tr := newTracer(&output)
+	tr.enabled.Store(true)
+	session := tr.beginTCP("tcp-failure", "src", "dst", "", "", "", "")
+	session.Close(0, 0, StatusDialError, "dial", errors.New("connection refused"))
+
+	events := decodeEvents(t, output.Bytes())
+	if len(events) != 2 || events[1].Type != TCPClose {
+		t.Fatalf("unexpected failure lifecycle: %+v", events)
+	}
+	if events[1].Status != StatusDialError || events[1].Stage != "dial" || events[1].Error != "connection refused" {
+		t.Fatalf("unexpected failure close event: %+v", events[1])
+	}
+}
+
+func TestConcurrentEventsHaveUniqueSequence(t *testing.T) {
+	var output bytes.Buffer
+	tr := newTracer(&output)
+	tr.enabled.Store(true)
+	session := tr.beginUDP("udp-concurrent", "src", "dst", "", "", "", "")
+	session.ProxyDial("proxy", "ss", "proxy:443", EndpointInfo{})
+
+	const count = 100
+	var wg sync.WaitGroup
+	wg.Add(count)
+	for i := 0; i < count; i++ {
+		go func() {
+			defer wg.Done()
+			session.PacketOut("src", "dst", 1)
+		}()
+	}
+	wg.Wait()
+	session.Close(count, 0, StatusClosed, "", nil)
+
+	events := decodeEvents(t, output.Bytes())
+	seenEvent := make(map[uint64]struct{}, len(events))
+	seenPacket := make(map[uint64]struct{}, count)
+	for _, e := range events {
+		if _, ok := seenEvent[e.EventSeq]; ok {
+			t.Fatalf("duplicate event sequence %d", e.EventSeq)
+		}
+		seenEvent[e.EventSeq] = struct{}{}
+		if e.Type == UDPOut {
+			seenPacket[e.Seq] = struct{}{}
+		}
+	}
+	if len(seenPacket) != count {
+		t.Fatalf("got %d unique packet sequences, want %d", len(seenPacket), count)
+	}
+}
+
+type staticAddr string
+
+func (a staticAddr) Network() string { return "test" }
+func (a staticAddr) String() string  { return string(a) }
+
+type endpointWrapper struct {
+	local, remote net.Addr
+	upstream      any
+}
+
+func (w *endpointWrapper) LocalAddr() net.Addr  { return w.local }
+func (w *endpointWrapper) RemoteAddr() net.Addr { return w.remote }
+func (w *endpointWrapper) Upstream() any        { return w.upstream }
+
+type cyclicEndpoint struct{}
+
+func (c *cyclicEndpoint) Upstream() any { return c }
+
+func TestExtractEndpoints(t *testing.T) {
+	inner := &endpointWrapper{local: staticAddr("inner-local"), remote: staticAddr("inner-remote")}
+	outer := &endpointWrapper{local: staticAddr("outer-local"), upstream: inner}
+	got := ExtractEndpoints(outer, "fallback:443")
+	if got.Local != "outer-local" || got.Remote != "inner-remote" || got.Scope != "logical" {
+		t.Fatalf("unexpected logical endpoints: %+v", got)
+	}
+
+	got = ExtractEndpoints(&cyclicEndpoint{}, "fallback:443")
+	if got.Remote != "fallback:443" || got.Scope != "logical" || got.Source != "proxy_config" {
+		t.Fatalf("unexpected cyclic fallback: %+v", got)
+	}
+
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	got = ExtractEndpoints(conn, "198.51.100.1:443")
+	if got.Local == "" || got.Remote != "198.51.100.1:443" || got.Scope != "physical" {
+		t.Fatalf("unexpected physical endpoints: %+v", got)
+	}
+}

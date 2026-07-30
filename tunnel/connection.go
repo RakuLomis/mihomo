@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net"
 	"net/netip"
-	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/common/lru"
@@ -18,26 +17,21 @@ import (
 )
 
 type packetSender struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	ch        chan C.PacketAdapter
-	cache     *lru.LruCache[string, netip.Addr]
-	seqOut    atomic.Uint32
-	seqIn     atomic.Uint32
-	proxyName string
+	ctx    context.Context
+	cancel context.CancelFunc
+	ch     chan C.PacketAdapter
+	cache  *lru.LruCache[string, netip.Addr]
+	trace  *tracer.UDPSession
 }
 
-func (s *packetSender) nextOutSeq() int {
-	return int(s.seqOut.Add(1))
-}
-
-func (s *packetSender) nextInSeq() int {
-	return int(s.seqIn.Add(1))
+type tracedPacketSender struct {
+	C.PacketSender
+	trace *tracer.UDPSession
 }
 
 // newPacketSender return a chan based C.PacketSender
 // It ensures that packets can be sent sequentially and without blocking
-func newPacketSender() C.PacketSender {
+func newPacketSender(trace *tracer.UDPSession) *packetSender {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan C.PacketAdapter, senderCapacity)
 	return &packetSender{
@@ -45,6 +39,7 @@ func newPacketSender() C.PacketSender {
 		cancel: cancel,
 		ch:     ch,
 		cache:  lru.New[string, netip.Addr](lru.WithSize[string, netip.Addr](senderCapacity)),
+		trace:  trace,
 	}
 }
 
@@ -61,15 +56,12 @@ func (s *packetSender) Process(pc C.PacketConn, proxy C.WriteBackProxy) {
 				log.Warnln("[UDP] Resolve Ip error: %s", err)
 			} else {
 				md := packet.Metadata()
-				tracer.UdpOut(
-					packet.Key(),
-					s.nextOutSeq(),
-					md.SourceDetail(),
-					md.RemoteAddress(),
-					len(packet.Data()),
-					s.proxyName,
-				)
-				_ = handleUDPToRemote(packet, pc, md)
+				if err := handleUDPToRemote(packet, pc, md); err != nil {
+					log.Debugln("[UDP] write remote error: %s", err)
+				} else if s.trace != nil {
+					// Only record packets accepted by the outbound connection.
+					s.trace.PacketOut(md.SourceDetail(), md.RemoteAddress(), len(packet.Data()))
+				}
 			}
 			packet.Drop()
 		}
@@ -142,23 +134,25 @@ func handleUDPToRemote(packet C.UDPPacket, pc C.PacketConn, metadata *C.Metadata
 	return nil
 }
 
-func handleUDPToLocal(writeBack C.WriteBack, pc N.EnhancePacketConn, sender C.PacketSender, key string, oAddrPort netip.AddrPort, fAddr netip.Addr) {
-	startTime := time.Now()
+func handleUDPToLocal(writeBack C.WriteBack, pc N.EnhancePacketConn, sender C.PacketSender, trace *tracer.UDPSession, key string, oAddrPort netip.AddrPort, fAddr netip.Addr) {
+	status := tracer.StatusClosed
+	stage := ""
+	var closeErr error
 	defer func() {
+		var bytesUp, bytesDown int64
 		if ti, ok := pc.(interface{ Info() *statistic.TrackerInfo }); ok {
 			info := ti.Info()
-			tracer.UDPCloseFn(key, info.UploadTotal.Load(), info.DownloadTotal.Load(), time.Since(startTime))
+			bytesUp = info.UploadTotal.Load()
+			bytesDown = info.DownloadTotal.Load()
+		}
+		if trace != nil {
+			trace.Close(bytesUp, bytesDown, status, stage, closeErr)
 		}
 		sender.Close()
 		_ = pc.Close()
 		closeAllLocalCoon(key)
 		natTable.Delete(key)
 	}()
-
-	var inSeq func() int
-	if ps, ok := sender.(*packetSender); ok {
-		inSeq = ps.nextInSeq
-	}
 
 	for {
 		_ = pc.SetReadDeadline(time.Now().Add(udpTimeout))
@@ -189,17 +183,16 @@ func handleUDPToLocal(writeBack C.WriteBack, pc N.EnhancePacketConn, sender C.Pa
 			}
 		}
 
-		seq := 0
-		if inSeq != nil {
-			seq = inSeq()
+		if trace != nil {
+			trace.PacketIn(fromUDPAddr.String(), len(data))
 		}
-		tracer.UdpIn(key, seq, fromUDPAddr.String(), len(data))
 
 		_, err = writeBack.WriteBack(data, fromUDPAddr)
 		if put != nil {
 			put()
 		}
 		if err != nil {
+			status, stage, closeErr = tracer.StatusCanceled, "write_back", err
 			return
 		}
 	}

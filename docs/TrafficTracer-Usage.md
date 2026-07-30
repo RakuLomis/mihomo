@@ -9,8 +9,7 @@
 ```
 
 - 平台: linux/amd64 (x86_64, GOAMD64=v3, 支持 AVX2)
-- 版本: 0897f41f
-- 构建时间: 2026-07-05
+- 该文件可能早于当前分支源码；部署前请使用 `-v` 核对 commit
 - 编译标签: with_gvisor (内含 gVisor TUN 网络栈)
 
 如需自行编译:
@@ -47,11 +46,21 @@ TrafficTracer 分支的核心新增功能是**连接级流量追踪系统**，�
 |----------|----------|----------|
 | `tcp_connect` | TCP 连接到达，元数据解析完成后 | TCP |
 | `tcp_proxy_dial` | 代理成功拨号到远端后 | TCP |
-| `tcp_close` | TCP 连接关闭时 | TCP |
+| `tcp_close` | TCP 连接关闭或拨号失败时 | TCP |
+| `udp_connect` | UDP NAT 会话建立时 | UDP |
+| `udp_proxy_dial` | UDP 代理套接字成功建立后 | UDP |
 | `udp_out` | 每个 UDP 数据包发送到代理时 | UDP |
 | `udp_in` | 每个 UDP 数据包从代理收到时 | UDP |
+| `udp_close` | UDP 会话关闭或拨号失败时 | UDP |
 
 ### 3.2 事件 JSON 格式
+
+所有事件都包含：
+
+- `ts`: 事件产生时的 UTC RFC3339Nano 时间戳
+- `event_seq`: 进程内递增的事件序号
+- `type`: 事件类型
+- `network`: `tcp` 或 `udp`
 
 **tcp_connect**（连接建立）:
 ```json
@@ -85,7 +94,10 @@ TrafficTracer 分支的核心新增功能是**连接级流量追踪系统**，�
     "proxy":        "MyProxy",
     "proxy_type":   "ss",
     "proxy_addr":   "5.6.7.8:8388",
-    "out_src":      "10.0.0.1:12345"
+    "out_src":      "10.0.0.1:12345",
+    "out_dst":      "5.6.7.8:8388",
+    "endpoint_scope": "physical",
+    "endpoint_source": "socket"
 }
 ```
 
@@ -94,7 +106,9 @@ TrafficTracer 分支的核心新增功能是**连接级流量追踪系统**，�
 - `proxy`: 代理节点名称
 - `proxy_type`: 代理类型（ss/vmess/trojan/snell/hysteria 等）
 - `proxy_addr`: 代理服务器地址
-- `out_src`: 本地出站地址
+- `out_src` / `out_dst`: 尽可能从最底层连接提取的代理后套接字端点
+- `endpoint_scope`: `physical`、`logical` 或 `unknown`
+- `endpoint_source`: 端点来源，例如 `socket`、`connection` 或 `proxy_config`
 
 **tcp_close**（连接关闭）:
 ```json
@@ -104,7 +118,8 @@ TrafficTracer 分支的核心新增功能是**连接级流量追踪系统**，�
     "conn_id":      "a1b2c3d4-...",
     "bytes_up":     1024000,
     "bytes_down":   5120000,
-    "duration_ms":  60000
+    "duration_ms":  60000,
+    "status":       "closed"
 }
 ```
 
@@ -113,6 +128,12 @@ TrafficTracer 分支的核心新增功能是**连接级流量追踪系统**，�
 - `bytes_up`: 总上传字节数
 - `bytes_down`: 总下载字节数
 - `duration_ms`: 连接持续时间（毫秒）
+- `status`: `closed`、`dial_error`、`resolve_error`、`rejected` 或 `canceled`
+- `stage` / `error`: 失败阶段和错误信息，仅失败时出现
+
+**udp_connect**（UDP 会话建立）与 `tcp_connect` 字段类似，使用 `conn_key` 代替 `conn_id`。
+
+**udp_proxy_dial**（UDP 代理套接字建立）与 `tcp_proxy_dial` 字段类似，使用 `conn_key` 关联会话。该事件提供 UDP 的 `proxy_addr`、`out_src`、`out_dst` 和端点可信范围。
 
 **udp_out**（UDP 上行）:
 ```json
@@ -145,6 +166,10 @@ TrafficTracer 分支的核心新增功能是**连接级流量追踪系统**，�
 - `seq`: 序列号（上行和下行独立编号，从 1 开始）
 - `len`: 数据包长度
 
+**udp_close**（UDP 会话关闭）的统计和状态字段与 `tcp_close` 相同，使用 `conn_key` 关联会话。
+
+生命周期语义：关闭追踪后不再接收新会话，也不再记录已有 UDP 会话的逐包事件；已经开始记录的 TCP/UDP 会话仍会输出最终 close，避免产生孤立 connect。启用追踪前已经存在的连接不会补发事件。
+
 ### 3.3 启用追踪
 
 **方式一：通过配置文件**
@@ -161,7 +186,8 @@ experimental:
 查询当前状态:
 ```bash
 curl http://localhost:9090/experimental/tracing
-# 返回: {"enabled":false,"output":""}
+# 返回示例:
+# {"enabled":false,"output":"","write_errors":0,"active_sessions":0}
 ```
 
 启用追踪并输出到 stdout:
@@ -185,7 +211,12 @@ curl -X PATCH http://localhost:9090/experimental/tracing \
   -d '{"enabled": false}'
 ```
 
-**注意**: 配置文件只能控制 `enabled` 开关，无法通过配置设置 output 路径。推荐使用 API 方式同时设置 `enabled` 和 `output`。
+**注意**:
+
+- 配置文件只能控制 `enabled`，无法设置 output 路径；仅通过配置启用时默认输出到 stdout。
+- API 中 `output: ""` 始终表示 stdout。
+- `enabled` 和 `output` 在一次 PATCH 中原子更新；输出路径打开失败时原状态保持不变。
+- 写入失败后 tracer 会停止接收新会话，并通过 `last_error` 和 `write_errors` 暴露错误。更换到有效 output 后才可重新启用。
 
 ### 3.4 使用示例
 
@@ -226,6 +257,12 @@ cat /tmp/trace.jsonl | jq -r 'select(.type=="udp_out") | [.conn_key, .len] | @ts
 3. **文件轮转**: 追踪系统本身不提供日志轮转功能。如果输出到文件，建议配合外部日志轮转工具（如 logrotate）。
 
 4. **线程安全**: 所有追踪写入通过单一 mutex 序列化，确保 JSON Lines 输出不会被交错破坏。
+
+5. **端点可信范围**: `physical` 表示成功找到系统 TCP/UDP 套接字；`logical` 表示只能获得协议包装层地址；`unknown` 表示无法可靠提取。`proxy_addr` 是配置地址，不能替代实际 pcap 五元组。
+
+6. **多路复用协议**: TUIC、Hysteria、HTTP/2、gRPC、AnyTLS 等可能让多个逻辑会话共享物理连接。此时多个事件出现相同外层端点是正常现象，当前版本不保证每条逻辑流拥有独立的外层五元组。
+
+7. **文件轮转**: 切换 output 可能把一个长连接的生命周期分散到两个文件。轮转或切换前应结合 `conn_id`/`conn_key` 与 `event_seq` 汇总分析。
 
 ---
 

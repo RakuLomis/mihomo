@@ -381,14 +381,7 @@ func handleUDPConn(packet C.PacketAdapter) {
 
 	key := packet.Key()
 	sender, loaded := natTable.GetOrCreate(key, func() C.PacketSender {
-		sender := newPacketSender()
-		if sniffingEnable && snifferDispatcher.Enable() {
-			return snifferDispatcher.UDPSniff(packet, sender)
-		}
-		return sender
-	})
-	if !loaded {
-		tracer.UDPConnectFn(
+		trace := tracer.BeginUDP(
 			key,
 			metadata.SourceDetail(),
 			metadata.RemoteAddress(),
@@ -397,23 +390,33 @@ func handleUDPConn(packet C.PacketAdapter) {
 			metadata.ProcessPath,
 			metadata.InName,
 		)
+		baseSender := newPacketSender(trace)
+		var packetSender C.PacketSender = baseSender
+		if sniffingEnable && snifferDispatcher.Enable() {
+			packetSender = snifferDispatcher.UDPSniff(packet, packetSender)
+		}
+		return &tracedPacketSender{PacketSender: packetSender, trace: trace}
+	})
+	if !loaded {
+		trace := sender.(*tracedPacketSender).trace
+		failureStatus := tracer.StatusDialError
+		failureStage := "resolve"
 
 		dial := func() (C.PacketConn, C.WriteBackProxy, error) {
 			if err := sender.ResolveUDP(metadata); err != nil {
+				failureStatus = tracer.StatusResolveError
 				log.Warnln("[UDP] Resolve Ip error: %s", err)
 				return nil, nil, err
 			}
 
+			failureStage = "rule"
 			proxy, rule, err := resolveMetadata(metadata)
 			if err != nil {
 				log.Warnln("[UDP] Parse metadata failed: %s", err.Error())
 				return nil, nil, err
 			}
 
-			if ps, ok := sender.(*packetSender); ok {
-				ps.proxyName = proxy.Name()
-			}
-
+			failureStage = "dial"
 			ctx, cancel := context.WithTimeout(context.Background(), C.DefaultUDPTimeout)
 			defer cancel()
 			rawPc, err := retry(ctx, func(ctx context.Context) (C.PacketConn, error) {
@@ -425,10 +428,13 @@ func handleUDPConn(packet C.PacketAdapter) {
 				return nil, nil, err
 			}
 			logMetadata(metadata, rule, rawPc)
+			trace.ProxyDial(proxy.Name(), proxy.Type().String(), proxy.Addr(), tracer.ExtractEndpoints(rawPc, proxy.Addr()))
 
 			pc := statistic.NewUDPTracker(rawPc, statistic.DefaultManager, metadata, rule, 0, 0, true)
 
 			if rawPc.Chains().Last() == "REJECT-DROP" {
+				failureStatus = tracer.StatusRejected
+				failureStage = "reject"
 				_ = pc.Close()
 				return nil, nil, errors.New("rejected drop packet")
 			}
@@ -436,13 +442,14 @@ func handleUDPConn(packet C.PacketAdapter) {
 			oAddrPort := metadata.AddrPort()
 			writeBackProxy := nat.NewWriteBackProxy(packet)
 
-			go handleUDPToLocal(writeBackProxy, pc, sender, key, oAddrPort, fAddr)
+			go handleUDPToLocal(writeBackProxy, pc, sender, trace, key, oAddrPort, fAddr)
 			return pc, writeBackProxy, nil
 		}
 
 		go func() {
 			pc, proxy, err := dial()
 			if err != nil {
+				trace.Close(0, 0, failureStatus, failureStage, err)
 				sender.Close()
 				natTable.Delete(key)
 				return
@@ -463,7 +470,6 @@ func handleTCPConn(connCtx C.ConnContext) {
 		_ = conn.Close()
 	}(connCtx.Conn())
 
-	startTime := time.Now()
 	metadata := connCtx.Metadata()
 	if !metadata.Valid() {
 		log.Warnln("[Metadata] not valid: %#v", metadata)
@@ -511,7 +517,7 @@ func handleTCPConn(connCtx C.ConnContext) {
 		return
 	}
 
-	tracer.Connect(
+	trace := tracer.BeginTCP(
 		connCtx.ID().String(),
 		metadata.SourceDetail(),
 		metadata.RemoteAddress(),
@@ -520,6 +526,19 @@ func handleTCPConn(connCtx C.ConnContext) {
 		metadata.ProcessPath,
 		metadata.InName,
 	)
+	traceStatus := tracer.StatusDialError
+	traceStage := "dial"
+	var traceErr error
+	var traceTracker statistic.Tracker
+	defer func() {
+		var bytesUp, bytesDown int64
+		if traceTracker != nil {
+			info := traceTracker.Info()
+			bytesUp = info.UploadTotal.Load()
+			bytesDown = info.DownloadTotal.Load()
+		}
+		trace.Close(bytesUp, bytesDown, traceStatus, traceStage, traceErr)
+	}()
 
 	dialMetadata := metadata
 	if len(metadata.Host) > 0 {
@@ -571,24 +590,17 @@ func handleTCPConn(connCtx C.ConnContext) {
 		logMetadataErr(metadata, rule, proxy, err)
 	})
 	if err != nil {
+		traceErr = err
 		return
 	}
 	logMetadata(metadata, rule, remoteConn)
 
-	tracer.ProxyDial(
-		connCtx.ID().String(),
-		proxy.Name(),
-		proxy.Type().String(),
-		proxy.Addr(),
-		remoteConn.LocalAddr().String(),
-	)
+	trace.ProxyDial(proxy.Name(), proxy.Type().String(), proxy.Addr(), tracer.ExtractEndpoints(remoteConn, proxy.Addr()))
 
 	remoteConn = statistic.NewTCPTracker(remoteConn, statistic.DefaultManager, metadata, rule, int64(peekLen), 0, true)
+	traceTracker = remoteConn.(statistic.Tracker)
+	traceStatus, traceStage, traceErr = tracer.StatusClosed, "", nil
 	defer func(remoteConn C.Conn) {
-		if tt, ok := remoteConn.(statistic.Tracker); ok {
-			info := tt.Info()
-			tracer.Close(connCtx.ID().String(), info.UploadTotal.Load(), info.DownloadTotal.Load(), time.Since(startTime))
-		}
 		_ = remoteConn.Close()
 	}(remoteConn)
 
