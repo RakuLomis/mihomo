@@ -7,9 +7,12 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/metacubex/mihomo/common/traffictrace"
 )
 
 type EventType string
@@ -34,34 +37,37 @@ const (
 )
 
 type event struct {
-	Ts             string    `json:"ts"`
-	EventSeq       uint64    `json:"event_seq"`
-	Type           EventType `json:"type"`
-	Network        string    `json:"network"`
-	ConnID         string    `json:"conn_id,omitempty"`
-	ConnKey        string    `json:"conn_key,omitempty"`
-	Seq            uint64    `json:"seq,omitempty"`
-	Src            string    `json:"src,omitempty"`
-	Dst            string    `json:"dst,omitempty"`
-	Host           string    `json:"host,omitempty"`
-	Process        string    `json:"process,omitempty"`
-	ProcessPath    string    `json:"process_path,omitempty"`
-	InName         string    `json:"in_name,omitempty"`
-	Proxy          string    `json:"proxy,omitempty"`
-	ProxyType      string    `json:"proxy_type,omitempty"`
-	ProxyAddr      string    `json:"proxy_addr,omitempty"`
-	OutSrc         string    `json:"out_src,omitempty"`
-	OutDst         string    `json:"out_dst,omitempty"`
-	EndpointScope  string    `json:"endpoint_scope,omitempty"`
-	EndpointSource string    `json:"endpoint_source,omitempty"`
-	Len            int       `json:"len,omitempty"`
-	From           string    `json:"from,omitempty"`
-	BytesUp        int64     `json:"bytes_up,omitempty"`
-	BytesDown      int64     `json:"bytes_down,omitempty"`
-	DurationMs     int64     `json:"duration_ms,omitempty"`
-	Status         string    `json:"status,omitempty"`
-	Stage          string    `json:"stage,omitempty"`
-	Error          string    `json:"error,omitempty"`
+	Ts             string                  `json:"ts"`
+	EventSeq       uint64                  `json:"event_seq"`
+	Type           EventType               `json:"type"`
+	Network        string                  `json:"network"`
+	PreFlow        *traffictrace.FlowTuple `json:"pre_flow,omitempty"`
+	PostFlow       *traffictrace.FlowTuple `json:"post_flow,omitempty"`
+	OuterConnID    string                  `json:"outer_conn_id,omitempty"`
+	ConnID         string                  `json:"conn_id,omitempty"`
+	ConnKey        string                  `json:"conn_key,omitempty"`
+	Seq            uint64                  `json:"seq,omitempty"`
+	Src            string                  `json:"src,omitempty"`
+	Dst            string                  `json:"dst,omitempty"`
+	Host           string                  `json:"host,omitempty"`
+	Process        string                  `json:"process,omitempty"`
+	ProcessPath    string                  `json:"process_path,omitempty"`
+	InName         string                  `json:"in_name,omitempty"`
+	Proxy          string                  `json:"proxy,omitempty"`
+	ProxyType      string                  `json:"proxy_type,omitempty"`
+	ProxyAddr      string                  `json:"proxy_addr,omitempty"`
+	OutSrc         string                  `json:"out_src,omitempty"`
+	OutDst         string                  `json:"out_dst,omitempty"`
+	EndpointScope  string                  `json:"endpoint_scope,omitempty"`
+	EndpointSource string                  `json:"endpoint_source,omitempty"`
+	Len            int                     `json:"len,omitempty"`
+	From           string                  `json:"from,omitempty"`
+	BytesUp        int64                   `json:"bytes_up,omitempty"`
+	BytesDown      int64                   `json:"bytes_down,omitempty"`
+	DurationMs     int64                   `json:"duration_ms,omitempty"`
+	Status         string                  `json:"status,omitempty"`
+	Stage          string                  `json:"stage,omitempty"`
+	Error          string                  `json:"error,omitempty"`
 }
 
 type ConfigPatch struct {
@@ -293,40 +299,70 @@ func addrString(addr net.Addr) string {
 }
 
 type TCPSession struct {
-	tracer *Tracer
-	id     string
-	start  time.Time
-	active bool
-	once   sync.Once
+	tracer  *Tracer
+	id      string
+	start   time.Time
+	active  bool
+	once    sync.Once
+	preFlow traffictrace.FlowTuple
+
+	mu    sync.RWMutex
+	outer traffictrace.OuterFlowObservation
 }
 
+var _ traffictrace.OuterFlowObserver = (*TCPSession)(nil)
+
 func BeginTCP(id, src, dst, host, process, processPath, inName string) *TCPSession {
-	return globalTracer.beginTCP(id, src, dst, host, process, processPath, inName)
+	return globalTracer.beginTCPWithFlow(id, traffictrace.FlowTuple{}, src, dst, host, process, processPath, inName)
+}
+
+func BeginTCPWithFlow(id string, preFlow traffictrace.FlowTuple, src, dst, host, process, processPath, inName string) *TCPSession {
+	return globalTracer.beginTCPWithFlow(id, preFlow, src, dst, host, process, processPath, inName)
 }
 
 func (t *Tracer) beginTCP(id, src, dst, host, process, processPath, inName string) *TCPSession {
-	s := &TCPSession{tracer: t, id: id, start: time.Now(), active: t.enabled.Load()}
+	return t.beginTCPWithFlow(id, traffictrace.FlowTuple{}, src, dst, host, process, processPath, inName)
+}
+
+func (t *Tracer) beginTCPWithFlow(id string, preFlow traffictrace.FlowTuple, src, dst, host, process, processPath, inName string) *TCPSession {
+	s := &TCPSession{tracer: t, id: id, start: time.Now(), active: t.enabled.Load(), preFlow: preFlow}
 	if !s.active {
 		return s
 	}
 	t.activeSessions.Add(1)
 	t.write(event{
-		Type: TCPConnect, Network: "tcp", ConnID: id,
+		Type: TCPConnect, Network: "tcp", ConnID: id, PreFlow: flowPointer(preFlow),
 		Src: src, Dst: dst, Host: host,
 		Process: process, ProcessPath: processPath, InName: inName,
 	})
 	return s
 }
 
+func (s *TCPSession) ObserveOuterFlow(observation traffictrace.OuterFlowObservation) {
+	if !s.active {
+		return
+	}
+	s.mu.Lock()
+	s.outer = observation
+	s.mu.Unlock()
+}
+
 func (s *TCPSession) ProxyDial(proxy, proxyType, proxyAddr string, endpoint EndpointInfo) {
 	if !s.active {
 		return
 	}
+	s.mu.RLock()
+	outer := s.outer
+	s.mu.RUnlock()
+	postFlow, outerConnID := normalizedPostFlow("tcp", proxyType, endpoint, outer)
+	outSrc, outDst := legacyPostEndpoints(endpoint, postFlow)
+	endpointScope, endpointSource := normalizedEndpointMetadata(endpoint, postFlow)
 	s.tracer.write(event{
 		Type: TCPProxyDial, Network: "tcp", ConnID: s.id,
 		Proxy: proxy, ProxyType: proxyType, ProxyAddr: proxyAddr,
-		OutSrc: endpoint.Local, OutDst: endpoint.Remote,
-		EndpointScope: endpoint.Scope, EndpointSource: endpoint.Source,
+		OutSrc: outSrc, OutDst: outDst,
+		EndpointScope: endpointScope, EndpointSource: endpointSource,
+		PostFlow: postFlow, OuterConnID: outerConnID,
 	})
 }
 
@@ -346,52 +382,82 @@ func (s *TCPSession) Close(bytesUp, bytesDown int64, status, stage string, cause
 }
 
 type UDPSession struct {
-	tracer *Tracer
-	key    string
-	start  time.Time
-	active bool
-	once   sync.Once
-	seqOut atomic.Uint64
-	seqIn  atomic.Uint64
+	tracer  *Tracer
+	key     string
+	start   time.Time
+	active  bool
+	once    sync.Once
+	seqOut  atomic.Uint64
+	seqIn   atomic.Uint64
+	preFlow traffictrace.FlowTuple
 
 	mu        sync.RWMutex
 	proxyName string
+	outer     traffictrace.OuterFlowObservation
 }
 
+var _ traffictrace.OuterFlowObserver = (*UDPSession)(nil)
+
 func BeginUDP(key, src, dst, host, process, processPath, inName string) *UDPSession {
-	return globalTracer.beginUDP(key, src, dst, host, process, processPath, inName)
+	return globalTracer.beginUDPWithFlow(key, traffictrace.FlowTuple{}, src, dst, host, process, processPath, inName)
+}
+
+func BeginUDPWithFlow(key string, preFlow traffictrace.FlowTuple, src, dst, host, process, processPath, inName string) *UDPSession {
+	return globalTracer.beginUDPWithFlow(key, preFlow, src, dst, host, process, processPath, inName)
 }
 
 func (t *Tracer) beginUDP(key, src, dst, host, process, processPath, inName string) *UDPSession {
-	s := &UDPSession{tracer: t, key: key, start: time.Now(), active: t.enabled.Load()}
+	return t.beginUDPWithFlow(key, traffictrace.FlowTuple{}, src, dst, host, process, processPath, inName)
+}
+
+func (t *Tracer) beginUDPWithFlow(key string, preFlow traffictrace.FlowTuple, src, dst, host, process, processPath, inName string) *UDPSession {
+	s := &UDPSession{tracer: t, key: key, start: time.Now(), active: t.enabled.Load(), preFlow: preFlow}
 	if !s.active {
 		return s
 	}
 	t.activeSessions.Add(1)
 	t.write(event{
-		Type: UDPConnect, Network: "udp", ConnKey: key,
+		Type: UDPConnect, Network: "udp", ConnKey: key, PreFlow: flowPointer(preFlow),
 		Src: src, Dst: dst, Host: host,
 		Process: process, ProcessPath: processPath, InName: inName,
 	})
 	return s
 }
 
+func (s *UDPSession) ObserveOuterFlow(observation traffictrace.OuterFlowObservation) {
+	if !s.active {
+		return
+	}
+	s.mu.Lock()
+	s.outer = observation
+	s.mu.Unlock()
+}
+
 func (s *UDPSession) ProxyDial(proxy, proxyType, proxyAddr string, endpoint EndpointInfo) {
 	s.mu.Lock()
 	s.proxyName = proxy
+	outer := s.outer
 	s.mu.Unlock()
 	if !s.active {
 		return
 	}
+	postFlow, outerConnID := normalizedPostFlow("udp", proxyType, endpoint, outer)
+	outSrc, outDst := legacyPostEndpoints(endpoint, postFlow)
+	endpointScope, endpointSource := normalizedEndpointMetadata(endpoint, postFlow)
 	s.tracer.write(event{
 		Type: UDPProxyDial, Network: "udp", ConnKey: s.key,
 		Proxy: proxy, ProxyType: proxyType, ProxyAddr: proxyAddr,
-		OutSrc: endpoint.Local, OutDst: endpoint.Remote,
-		EndpointScope: endpoint.Scope, EndpointSource: endpoint.Source,
+		OutSrc: outSrc, OutDst: outDst,
+		EndpointScope: endpointScope, EndpointSource: endpointSource,
+		PostFlow: postFlow, OuterConnID: outerConnID,
 	})
 }
 
 func (s *UDPSession) PacketOut(src, dst string, length int) {
+	s.PacketOutWithFlow(traffictrace.FlowTuple{}, src, dst, length)
+}
+
+func (s *UDPSession) PacketOutWithFlow(preFlow traffictrace.FlowTuple, src, dst string, length int) {
 	if !s.active || !s.tracer.enabled.Load() {
 		return
 	}
@@ -399,7 +465,7 @@ func (s *UDPSession) PacketOut(src, dst string, length int) {
 	proxy := s.proxyName
 	s.mu.RUnlock()
 	s.tracer.write(event{
-		Type: UDPOut, Network: "udp", ConnKey: s.key,
+		Type: UDPOut, Network: "udp", ConnKey: s.key, PreFlow: flowPointer(preFlow),
 		Seq: s.seqOut.Add(1), Src: src, Dst: dst, Len: length, Proxy: proxy,
 	})
 }
@@ -409,7 +475,7 @@ func (s *UDPSession) PacketIn(from string, length int) {
 		return
 	}
 	s.tracer.write(event{
-		Type: UDPIn, Network: "udp", ConnKey: s.key,
+		Type: UDPIn, Network: "udp", ConnKey: s.key, PreFlow: flowPointer(s.preFlow),
 		Seq: s.seqIn.Add(1), From: from, Len: length,
 	})
 }
@@ -427,6 +493,54 @@ func (s *UDPSession) Close(bytesUp, bytesDown int64, status, stage string, cause
 		})
 		s.tracer.activeSessions.Add(-1)
 	})
+}
+
+func normalizedPostFlow(network, proxyType string, endpoint EndpointInfo, outer traffictrace.OuterFlowObservation) (*traffictrace.FlowTuple, string) {
+	if outer.OuterConnID != "" {
+		flow := outer.Flow
+		flow.Shared = potentiallySharedProxy(proxyType)
+		return &flow, outer.OuterConnID
+	}
+	flow := traffictrace.NewFlowTupleFromStrings(network, endpoint.Local, endpoint.Remote, endpoint.Source, endpoint.Scope, potentiallySharedProxy(proxyType))
+	return &flow, ""
+}
+
+func normalizedEndpointMetadata(endpoint EndpointInfo, flow *traffictrace.FlowTuple) (string, string) {
+	if flow != nil {
+		return flow.Scope, flow.Source
+	}
+	return endpoint.Scope, endpoint.Source
+}
+
+func legacyPostEndpoints(endpoint EndpointInfo, flow *traffictrace.FlowTuple) (string, string) {
+	outSrc, outDst := endpoint.Local, endpoint.Remote
+	if flow == nil {
+		return outSrc, outDst
+	}
+	if outSrc == "" && flow.SrcIP != "" && flow.SrcPort != 0 {
+		outSrc = net.JoinHostPort(flow.SrcIP, fmt.Sprintf("%d", flow.SrcPort))
+	}
+	if outDst == "" && flow.DstIP != "" && flow.DstPort != 0 {
+		outDst = net.JoinHostPort(flow.DstIP, fmt.Sprintf("%d", flow.DstPort))
+	}
+	return outSrc, outDst
+}
+
+func flowPointer(flow traffictrace.FlowTuple) *traffictrace.FlowTuple {
+	if flow.Network == "" {
+		return nil
+	}
+	copyFlow := flow
+	return &copyFlow
+}
+
+func potentiallySharedProxy(proxyType string) bool {
+	switch strings.ToLower(proxyType) {
+	case "tuic", "hysteria", "hysteria2", "anytls":
+		return true
+	default:
+		return false
+	}
 }
 
 func errorString(err error) string {

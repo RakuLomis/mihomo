@@ -60,7 +60,7 @@ func (s *packetSender) Process(pc C.PacketConn, proxy C.WriteBackProxy) {
 					log.Debugln("[UDP] write remote error: %s", err)
 				} else if s.trace != nil {
 					// Only record packets accepted by the outbound connection.
-					s.trace.PacketOut(md.SourceDetail(), md.RemoteAddress(), len(packet.Data()))
+					s.trace.PacketOutWithFlow(md.OriginalFlow, md.SourceDetail(), md.RemoteAddress(), len(packet.Data()))
 				}
 			}
 			packet.Drop()

@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"strconv"
 
+	"github.com/metacubex/mihomo/common/traffictrace"
 	"github.com/metacubex/mihomo/transport/socks5"
 )
 
@@ -172,6 +173,9 @@ type Metadata struct {
 	RawDstAddr net.Addr `json:"-"`
 	// Only domain rule
 	SniffHost string `json:"sniffHost"`
+
+	OriginalFlow         traffictrace.FlowTuple `json:"-"`
+	OriginalFlowCaptured bool                   `json:"-"`
 }
 
 func (m *Metadata) RemoteAddress() string {
@@ -220,6 +224,61 @@ func (m *Metadata) AddrType() int {
 
 func (m *Metadata) Resolved() bool {
 	return m.DstIP.IsValid()
+}
+
+// CaptureOriginalFlow stores the numeric flow as it entered the tunnel. It is
+// intentionally idempotent because preHandleMetadata may later replace a fake
+// IP with a domain or resolve a domain to a different address.
+func (m *Metadata) CaptureOriginalFlow() {
+	if m.OriginalFlowCaptured {
+		return
+	}
+	m.OriginalFlowCaptured = true
+
+	src := metadataAddrPort(m.SrcIP, m.SrcPort)
+	dst := metadataAddrPort(m.DstIP, m.DstPort)
+	usedRaw := false
+	if !src.IsValid() {
+		if raw, ok := traffictrace.AddrPortFromNetAddr(m.RawSrcAddr); ok {
+			src = raw
+			usedRaw = true
+		}
+	}
+	// A domain-based explicit proxy request has no target IP. RawDstAddr may
+	// be the local proxy listener in that case and must not be substituted.
+	if !dst.IsValid() && m.Host == "" {
+		if raw, ok := traffictrace.AddrPortFromNetAddr(m.RawDstAddr); ok {
+			dst = raw
+			usedRaw = true
+		}
+	}
+
+	source := "metadata_snapshot"
+	if usedRaw {
+		source = "metadata+raw_snapshot"
+	}
+	if !dst.IsValid() && m.Host != "" {
+		source = "proxy_request"
+	}
+	m.OriginalFlow = traffictrace.NewFlowTuple(
+		m.NetWork.String(),
+		src,
+		dst,
+		m.Host,
+		source,
+		"logical",
+		false,
+	)
+	if m.OriginalFlow.DstPort == 0 {
+		m.OriginalFlow.DstPort = m.DstPort
+	}
+}
+
+func metadataAddrPort(addr netip.Addr, port uint16) netip.AddrPort {
+	if !addr.IsValid() {
+		return netip.AddrPort{}
+	}
+	return netip.AddrPortFrom(addr.Unmap(), port)
 }
 
 func (m *Metadata) RuleHost() string {

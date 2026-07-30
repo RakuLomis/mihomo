@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metacubex/mihomo/common/traffictrace"
 	"github.com/metacubex/mihomo/component/keepalive"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/log"
@@ -68,14 +69,19 @@ func DialContext(ctx context.Context, network, address string, options ...Option
 		return nil, err
 	}
 
+	var conn net.Conn
 	switch network {
 	case "tcp4", "tcp6", "udp4", "udp6":
-		return actualSingleStackDialContext(ctx, network, ips, port, opt)
+		conn, err = actualSingleStackDialContext(ctx, network, ips, port, opt)
 	case "tcp", "udp":
-		return actualDualStackDialContext(ctx, network, ips, port, opt)
+		conn, err = actualDualStackDialContext(ctx, network, ips, port, opt)
 	default:
 		return nil, ErrorInvalidedNetworkStack
 	}
+	if err == nil {
+		traffictrace.ObserveOuterFlow(ctx, network, conn.LocalAddr(), conn.RemoteAddr(), "dialer_socket")
+	}
+	return conn, err
 }
 
 func ListenPacket(ctx context.Context, network, address string, rAddrPort netip.AddrPort, options ...Option) (net.PacketConn, error) {
@@ -114,7 +120,16 @@ func ListenPacket(ctx context.Context, network, address string, rAddrPort netip.
 		}
 	}
 
-	return lc.ListenPacket(ctx, network, address)
+	packetConn, err := lc.ListenPacket(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	var remoteAddr net.Addr
+	if rAddrPort.IsValid() {
+		remoteAddr = net.UDPAddrFromAddrPort(rAddrPort)
+	}
+	traffictrace.ObserveOuterFlow(ctx, network, packetConn.LocalAddr(), remoteAddr, "dialer_socket")
+	return packetConn, nil
 }
 
 func SetTcpConcurrent(concurrent bool) {

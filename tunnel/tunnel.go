@@ -13,6 +13,7 @@ import (
 	"time"
 
 	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/traffictrace"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/loopback"
 	"github.com/metacubex/mihomo/component/nat"
@@ -76,6 +77,7 @@ var _ C.Tunnel = Tunnel
 var _ provider.Tunnel = Tunnel
 
 func (t tunnel) HandleTCPConn(conn net.Conn, metadata *C.Metadata) {
+	metadata.CaptureOriginalFlow()
 	connCtx := icontext.NewConnContext(conn, metadata)
 	handleTCPConn(connCtx)
 }
@@ -95,6 +97,7 @@ func initUDP() {
 }
 
 func (t tunnel) HandleUDPPacket(packet C.UDPPacket, metadata *C.Metadata) {
+	metadata.CaptureOriginalFlow()
 	udpInit.Do(initUDP)
 
 	packetAdapter := C.NewPacketAdapter(packet, metadata)
@@ -355,6 +358,7 @@ func processUDP(queue chan C.PacketAdapter) {
 }
 
 func handleUDPConn(packet C.PacketAdapter) {
+	packet.Metadata().CaptureOriginalFlow()
 	if !isHandle(packet.Metadata().Type) {
 		packet.Drop()
 		return
@@ -381,8 +385,9 @@ func handleUDPConn(packet C.PacketAdapter) {
 
 	key := packet.Key()
 	sender, loaded := natTable.GetOrCreate(key, func() C.PacketSender {
-		trace := tracer.BeginUDP(
+		trace := tracer.BeginUDPWithFlow(
 			key,
+			metadata.OriginalFlow,
 			metadata.SourceDetail(),
 			metadata.RemoteAddress(),
 			metadata.Host,
@@ -418,6 +423,7 @@ func handleUDPConn(packet C.PacketAdapter) {
 
 			failureStage = "dial"
 			ctx, cancel := context.WithTimeout(context.Background(), C.DefaultUDPTimeout)
+			ctx = traffictrace.WithObserver(ctx, trace)
 			defer cancel()
 			rawPc, err := retry(ctx, func(ctx context.Context) (C.PacketConn, error) {
 				return proxy.ListenPacketContext(ctx, metadata.Pure())
@@ -471,6 +477,7 @@ func handleTCPConn(connCtx C.ConnContext) {
 	}(connCtx.Conn())
 
 	metadata := connCtx.Metadata()
+	metadata.CaptureOriginalFlow()
 	if !metadata.Valid() {
 		log.Warnln("[Metadata] not valid: %#v", metadata)
 		return
@@ -517,8 +524,9 @@ func handleTCPConn(connCtx C.ConnContext) {
 		return
 	}
 
-	trace := tracer.BeginTCP(
+	trace := tracer.BeginTCPWithFlow(
 		connCtx.ID().String(),
+		metadata.OriginalFlow,
 		metadata.SourceDetail(),
 		metadata.RemoteAddress(),
 		metadata.Host,
@@ -555,6 +563,7 @@ func handleTCPConn(connCtx C.ConnContext) {
 	var peekLen int
 
 	ctx, cancel := context.WithTimeout(context.Background(), C.DefaultTCPTimeout)
+	ctx = traffictrace.WithObserver(ctx, trace)
 	defer cancel()
 	remoteConn, err := retry(ctx, func(ctx context.Context) (remoteConn C.Conn, err error) {
 		remoteConn, err = proxy.DialContext(ctx, dialMetadata)

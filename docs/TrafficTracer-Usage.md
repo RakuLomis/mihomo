@@ -38,7 +38,7 @@ make linux-amd64-compatible  # amd64 v1 (兼容性更好)
 
 ## 3. TrafficTracer 新增功能：连接级流量追踪 (Connection Tracing)
 
-TrafficTracer 分支的核心新增功能是**连接级流量追踪系统**，可以记录每一个 TCP/UDP 连接的生命周期事件，包括连接建立、代理选择和流量统计，输出为 JSON Lines 格式，方便与外部监控系统集成。
+TrafficTracer 分支的核心新增功能是**连接级流量追踪系统**，可以记录每一个 TCP/UDP 连接的生命周期事件、规范化的代理前后五元组、代理选择和流量统计，输出为 JSON Lines 格式，方便与外部监控系统集成。
 
 ### 3.1 事件类型
 
@@ -61,6 +61,43 @@ TrafficTracer 分支的核心新增功能是**连接级流量追踪系统**，�
 - `event_seq`: 进程内递增的事件序号
 - `type`: 事件类型
 - `network`: `tcp` 或 `udp`
+
+**规范化代理前后流**：
+
+入口事件使用 `pre_flow` 表示进入 Mihomo 前的逻辑流，拨号成功事件使用 `post_flow` 表示 Mihomo 实际创建的外层流。二者采用相同结构：
+
+```json
+{
+    "network":  "tcp",
+    "src_ip":   "192.168.1.100",
+    "src_port": 54321,
+    "dst_ip":   "1.2.3.4",
+    "dst_port": 443,
+    "dst_host": "example.com",
+    "key":      "tcp|192.168.1.100:54321|1.2.3.4:443",
+    "complete": true,
+    "source":   "metadata_snapshot",
+    "scope":    "logical",
+    "shared":   false
+}
+```
+
+- `key` 只在协议、源 IP/端口和目标 IP/端口均为有效数值时生成。给定代理前五元组时，可按相同格式构造 key 查询 `pre_flow.key`。
+- `complete: false` 表示信息不完整，不应进行精确 key 匹配；域名请求仍保留 `dst_host` 和 `dst_port`。
+- `scope: logical` 表示 Mihomo 入口看到的逻辑流，`scope: physical` 表示操作系统实际创建的 socket。
+- `source` 说明数据来源，例如 `metadata_snapshot`、`proxy_request` 或 `dialer_socket`。
+- `shared: true` 表示该外层连接可能被多条逻辑流复用，不能解释为一对一 NAT 映射。
+- `outer_conn_id` 标识一次外层拨号结果，用于关联或识别共享的物理连接。
+
+已知代理前五元组时，先查入口/逐包事件，再通过 `conn_id` 或 `conn_key` 找代理拨号事件中的 `post_flow`：
+
+```bash
+FLOW_KEY='tcp|192.168.1.100:54321|1.2.3.4:443'
+jq --arg key "$FLOW_KEY" 'select(.type=="tcp_connect" and .pre_flow.key==$key)' /tmp/trace.jsonl
+
+FLOW_KEY='udp|192.168.1.100:54321|8.8.8.8:53'
+jq --arg key "$FLOW_KEY" 'select(.type=="udp_out" and .pre_flow.key==$key)' /tmp/trace.jsonl
+```
 
 **tcp_connect**（连接建立）:
 ```json
@@ -131,7 +168,7 @@ TrafficTracer 分支的核心新增功能是**连接级流量追踪系统**，�
 - `status`: `closed`、`dial_error`、`resolve_error`、`rejected` 或 `canceled`
 - `stage` / `error`: 失败阶段和错误信息，仅失败时出现
 
-**udp_connect**（UDP 会话建立）与 `tcp_connect` 字段类似，使用 `conn_key` 代替 `conn_id`。
+**udp_connect**（UDP 会话建立）与 `tcp_connect` 字段类似，使用 `conn_key` 代替 `conn_id`。`udp_out` 会携带该数据包自己的 `pre_flow`，因此同一源 socket 向多个目标发送时仍可区分目标五元组。
 
 **udp_proxy_dial**（UDP 代理套接字建立）与 `tcp_proxy_dial` 字段类似，使用 `conn_key` 关联会话。该事件提供 UDP 的 `proxy_addr`、`out_src`、`out_dst` 和端点可信范围。
 
@@ -162,7 +199,7 @@ TrafficTracer 分支的核心新增功能是**连接级流量追踪系统**，�
 ```
 
 字段说明:
-- `conn_key`: NAT 会话键（格式 `src->dst`），用于关联同一 UDP 会话的所有数据包
+- `conn_key`: Mihomo UDP NAT 会话键；当前实现通常是本地源地址，不等同于五元组，也不能单独区分同一源 socket 的多个目标
 - `seq`: 序列号（上行和下行独立编号，从 1 开始）
 - `len`: 数据包长度
 
@@ -260,7 +297,7 @@ cat /tmp/trace.jsonl | jq -r 'select(.type=="udp_out") | [.conn_key, .len] | @ts
 
 5. **端点可信范围**: `physical` 表示成功找到系统 TCP/UDP 套接字；`logical` 表示只能获得协议包装层地址；`unknown` 表示无法可靠提取。`proxy_addr` 是配置地址，不能替代实际 pcap 五元组。
 
-6. **多路复用协议**: TUIC、Hysteria、HTTP/2、gRPC、AnyTLS 等可能让多个逻辑会话共享物理连接。此时多个事件出现相同外层端点是正常现象，当前版本不保证每条逻辑流拥有独立的外层五元组。
+6. **多路复用协议**: TUIC、Hysteria、HTTP/2、gRPC、AnyTLS 等可能让多个逻辑会话共享物理连接。此时多个事件出现相同 `outer_conn_id` 或 `post_flow.key` 是正常现象；`shared: true` 明确表示不能声称一条逻辑流独占该外层五元组。
 
 7. **文件轮转**: 切换 output 可能把一个长连接的生命周期分散到两个文件。轮转或切换前应结合 `conn_id`/`conn_key` 与 `event_seq` 汇总分析。
 
