@@ -1,0 +1,12 @@
+{
+  "api_version": 1,
+  "event_schema_version": 1,
+  "capabilities": [
+    "tcp",
+    "udp",
+    "normalized_flow",
+    "outer_conn_id",
+    "session_id",
+    "shared_outer_flow"
+  ]
+}
