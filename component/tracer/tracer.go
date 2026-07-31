@@ -37,6 +37,8 @@ const (
 )
 
 type event struct {
+	SchemaVersion  int                     `json:"schema_version"`
+	SessionID      string                  `json:"session_id,omitempty"`
 	Ts             string                  `json:"ts"`
 	EventSeq       uint64                  `json:"event_seq"`
 	Type           EventType               `json:"type"`
@@ -191,17 +193,21 @@ func (t *Tracer) status() Status {
 }
 
 func (t *Tracer) write(e event) {
+	e.SchemaVersion = EventSchemaVersion
 	e.EventSeq = t.eventSeq.Add(1)
 	e.Ts = time.Now().UTC().Format(time.RFC3339Nano)
 
-	b, err := json.Marshal(e)
-	if err != nil {
-		t.recordWriteError(err)
-		return
-	}
-
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	e.SessionID = t.sessionID
+	b, err := json.Marshal(e)
+	if err != nil {
+		t.failed = true
+		t.lastError = err.Error()
+		t.writeErrors.Add(1)
+		t.enabled.Store(false)
+		return
+	}
 	if t.writer == nil || t.failed {
 		return
 	}
@@ -217,15 +223,6 @@ func (t *Tracer) write(e event) {
 		t.writeErrors.Add(1)
 		t.enabled.Store(false)
 	}
-}
-
-func (t *Tracer) recordWriteError(err error) {
-	t.mu.Lock()
-	t.failed = true
-	t.lastError = err.Error()
-	t.writeErrors.Add(1)
-	t.enabled.Store(false)
-	t.mu.Unlock()
 }
 
 type EndpointInfo struct {

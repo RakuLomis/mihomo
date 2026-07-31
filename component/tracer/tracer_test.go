@@ -281,3 +281,98 @@ func TestConfigureOutputFailureDoesNotChangeSessionID(t *testing.T) {
 		t.Fatalf("failed output patch changed session ID to %q", got)
 	}
 }
+
+func decodeRawEvents(t *testing.T, data []byte) []map[string]any {
+	t.Helper()
+	lines := bytes.Split(bytes.TrimSpace(data), []byte{'\n'})
+	if len(lines) == 1 && len(lines[0]) == 0 {
+		return nil
+	}
+	events := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		var event map[string]any
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatalf("decode raw event %q: %v", line, err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func TestEventsCarrySchemaVersionAndOptionalSessionID(t *testing.T) {
+	var withoutSession bytes.Buffer
+	plain := newTracer(&withoutSession)
+	plain.enabled.Store(true)
+	plainSession := plain.beginTCP("tcp-plain", "src", "dst", "", "", "", "")
+	plainSession.Close(0, 0, StatusClosed, "", nil)
+	for _, event := range decodeRawEvents(t, withoutSession.Bytes()) {
+		if event["schema_version"] != float64(EventSchemaVersion) {
+			t.Fatalf("schema_version = %v, want %d", event["schema_version"], EventSchemaVersion)
+		}
+		if _, ok := event["session_id"]; ok {
+			t.Fatalf("unset session_id must be omitted: %v", event)
+		}
+	}
+
+	var withSession bytes.Buffer
+	tagged := newTracer(&withSession)
+	tagged.enabled.Store(true)
+	sessionID := "session-tagged"
+	if err := tagged.configure(ConfigPatch{SessionID: &sessionID}); err != nil {
+		t.Fatal(err)
+	}
+	taggedSession := tagged.beginUDP("udp-tagged", "src", "dst", "", "", "", "")
+	taggedSession.ProxyDial("proxy", "ss", "proxy:443", EndpointInfo{})
+	taggedSession.PacketOut("src", "dst", 10)
+	taggedSession.Close(10, 0, StatusClosed, "", nil)
+	for _, event := range decodeRawEvents(t, withSession.Bytes()) {
+		if event["schema_version"] != float64(EventSchemaVersion) || event["session_id"] != sessionID {
+			t.Fatalf("unexpected tagged event envelope: %v", event)
+		}
+	}
+}
+
+func TestConcurrentSessionConfigurationAndEvents(t *testing.T) {
+	var output bytes.Buffer
+	tr := newTracer(&output)
+	tr.enabled.Store(true)
+	first := "session-a"
+	if err := tr.configure(ConfigPatch{SessionID: &first}); err != nil {
+		t.Fatal(err)
+	}
+	session := tr.beginUDP("udp-race", "src", "dst", "", "", "", "")
+
+	const count = 100
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < count; i++ {
+			value := "session-a"
+			if i%2 == 1 {
+				value = "session-b"
+			}
+			if err := tr.configure(ConfigPatch{SessionID: &value}); err != nil {
+				t.Errorf("configure session ID: %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < count; i++ {
+			session.PacketOut("src", "dst", 1)
+		}
+	}()
+	wg.Wait()
+	session.Close(count, 0, StatusClosed, "", nil)
+
+	for _, event := range decodeEvents(t, output.Bytes()) {
+		if event.SchemaVersion != EventSchemaVersion {
+			t.Fatalf("schema version = %d, want %d", event.SchemaVersion, EventSchemaVersion)
+		}
+		if event.SessionID != "session-a" && event.SessionID != "session-b" {
+			t.Fatalf("unexpected session ID %q", event.SessionID)
+		}
+	}
+}
