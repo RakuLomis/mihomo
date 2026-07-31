@@ -71,13 +71,15 @@ type event struct {
 }
 
 type ConfigPatch struct {
-	Enabled *bool
-	Output  *string
+	Enabled   *bool
+	Output    *string
+	SessionID *string
 }
 
 type Status struct {
 	Enabled        bool   `json:"enabled"`
 	Output         string `json:"output"`
+	SessionID      string `json:"session_id,omitempty"`
 	LastError      string `json:"last_error,omitempty"`
 	WriteErrors    uint64 `json:"write_errors"`
 	ActiveSessions int64  `json:"active_sessions"`
@@ -94,6 +96,7 @@ type Tracer struct {
 	writer    *bufio.Writer
 	file      *os.File
 	output    string
+	sessionID string
 	lastError string
 	failed    bool
 }
@@ -147,6 +150,9 @@ func (t *Tracer) configure(patch ConfigPatch) error {
 		}
 		t.enabled.Store(*patch.Enabled)
 	}
+	if patch.SessionID != nil {
+		t.sessionID = *patch.SessionID
+	}
 	t.mu.Unlock()
 	return nil
 }
@@ -177,6 +183,7 @@ func (t *Tracer) status() Status {
 	return Status{
 		Enabled:        t.enabled.Load(),
 		Output:         t.output,
+		SessionID:      t.sessionID,
 		LastError:      t.lastError,
 		WriteErrors:    t.writeErrors.Load(),
 		ActiveSessions: t.activeSessions.Load(),

@@ -235,3 +235,49 @@ func TestExtractEndpoints(t *testing.T) {
 		t.Fatalf("unexpected physical endpoints: %+v", got)
 	}
 }
+
+func TestConfigureSessionIDPatchSemantics(t *testing.T) {
+	var output bytes.Buffer
+	tr := newTracer(&output)
+
+	first := "session-one"
+	if err := tr.configure(ConfigPatch{SessionID: &first}); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.status().SessionID; got != first {
+		t.Fatalf("session ID = %q, want %q", got, first)
+	}
+
+	if err := tr.configure(ConfigPatch{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.status().SessionID; got != first {
+		t.Fatalf("omitted session ID changed value to %q", got)
+	}
+
+	empty := ""
+	if err := tr.configure(ConfigPatch{SessionID: &empty}); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.status().SessionID; got != "" {
+		t.Fatalf("empty session ID did not clear value: %q", got)
+	}
+}
+
+func TestConfigureOutputFailureDoesNotChangeSessionID(t *testing.T) {
+	var output bytes.Buffer
+	tr := newTracer(&output)
+	original := "session-original"
+	if err := tr.configure(ConfigPatch{SessionID: &original}); err != nil {
+		t.Fatal(err)
+	}
+
+	invalidPath := filepath.Join(t.TempDir(), "missing", "trace.jsonl")
+	replacement := "session-replacement"
+	if err := tr.configure(ConfigPatch{Output: &invalidPath, SessionID: &replacement}); err == nil {
+		t.Fatal("expected invalid output path to fail")
+	}
+	if got := tr.status().SessionID; got != original {
+		t.Fatalf("failed output patch changed session ID to %q", got)
+	}
+}
