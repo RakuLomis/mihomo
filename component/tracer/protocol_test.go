@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -48,5 +49,59 @@ func TestProtocolConstantsMatchFixture(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fixture.Capabilities, wantCapabilities) {
 		t.Fatalf("fixture capabilities = %q, want %q", fixture.Capabilities, wantCapabilities)
+	}
+}
+
+func TestCapabilitiesJSONKeysAndCurrentValues(t *testing.T) {
+	data, err := json.Marshal(CurrentCapabilities())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	wantKeys := []string{
+		"api_version",
+		"event_schema_version",
+		"supports_normalized_flow",
+		"supports_outer_conn_id",
+		"supports_session_id",
+		"supports_shared_outer_flow",
+		"supports_tcp",
+		"supports_udp",
+	}
+	gotKeys := make([]string, 0, len(got))
+	for key := range got {
+		gotKeys = append(gotKeys, key)
+	}
+	sort.Strings(gotKeys)
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("capability JSON keys = %q, want %q", gotKeys, wantKeys)
+	}
+	if got["api_version"] != float64(TracingAPIVersion) || got["event_schema_version"] != float64(EventSchemaVersion) {
+		t.Fatalf("unexpected capability versions: %s", data)
+	}
+	for _, key := range wantKeys[2:] {
+		if got[key] != true {
+			t.Fatalf("%s = %v, want true", key, got[key])
+		}
+	}
+}
+
+func TestCapabilitiesZeroValueIsExplicit(t *testing.T) {
+	data, err := json.Marshal(Capabilities{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 8 {
+		t.Fatalf("zero-value capabilities encoded %d fields, want 8: %s", len(got), data)
+	}
+	if got["api_version"] != float64(0) || got["supports_tcp"] != false {
+		t.Fatalf("unexpected zero-value encoding: %s", data)
 	}
 }
