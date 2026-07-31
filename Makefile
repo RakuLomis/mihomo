@@ -16,6 +16,14 @@ GOBUILD=CGO_ENABLED=0 go build -tags with_gvisor -trimpath -ldflags '-X "github.
 		-X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" \
 		-w -s -buildid='
 
+.PHONY: complete-linux-amd64 smoke-complete-core
+
+complete-linux-amd64:
+	@bash scripts/build-complete-core.sh
+
+smoke-complete-core: complete-linux-amd64
+	@bash scripts/smoke-complete-core.sh
+
 PLATFORM_LIST = \
 	darwin-amd64-compatible \
 	darwin-amd64 \
