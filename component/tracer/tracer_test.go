@@ -376,3 +376,28 @@ func TestConcurrentSessionConfigurationAndEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyEventParserIgnoresCompleteEnvelopeFields(t *testing.T) {
+	var output bytes.Buffer
+	tr := newTracer(&output)
+	tr.enabled.Store(true)
+	session := tr.beginTCP("legacy-conn", "127.0.0.1:14000", "1.1.1.1:443", "example.com", "curl", "/usr/bin/curl", "mixed")
+	session.Close(4, 8, StatusClosed, "", nil)
+
+	legacy := struct {
+		Type    EventType `json:"type"`
+		Network string    `json:"network"`
+		ConnID  string    `json:"conn_id"`
+		Src     string    `json:"src"`
+		Dst     string    `json:"dst"`
+		Host    string    `json:"host"`
+	}{}
+	firstLine := bytes.Split(output.Bytes(), []byte{'\n'})[0]
+	if err := json.Unmarshal(firstLine, &legacy); err != nil {
+		t.Fatalf("legacy parser rejected versioned event: %v", err)
+	}
+	if legacy.Type != TCPConnect || legacy.Network != "tcp" || legacy.ConnID != "legacy-conn" ||
+		legacy.Src != "127.0.0.1:14000" || legacy.Dst != "1.1.1.1:443" || legacy.Host != "example.com" {
+		t.Fatalf("legacy fields changed: %+v", legacy)
+	}
+}
