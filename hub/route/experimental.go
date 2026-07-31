@@ -27,12 +27,17 @@ type tracingPatch struct {
 func experimentalRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/tracing", getTracing)
+	r.Get("/tracing/capabilities", getTracingCapabilities)
 	r.Patch("/tracing", patchTracing)
 	return r
 }
 
 func getTracing(w http.ResponseWriter, r *http.Request) {
 	render.JSON(w, r, currentTracingInfo())
+}
+
+func getTracingCapabilities(w http.ResponseWriter, r *http.Request) {
+	render.JSON(w, r, tracer.CurrentCapabilities())
 }
 
 func patchTracing(w http.ResponseWriter, r *http.Request) {

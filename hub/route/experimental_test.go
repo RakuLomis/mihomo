@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -96,5 +97,38 @@ func TestPatchTracingRejectsMalformedJSON(t *testing.T) {
 	resp, _ := tracingRequest(t, patchTracing, http.MethodPatch, "{")
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestGetTracingCapabilities(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/tracing/capabilities", nil)
+	resp := httptest.NewRecorder()
+	experimentalRouter().ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if got := resp.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	var got tracer.Capabilities
+	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode capabilities response: %v", err)
+	}
+	if want := tracer.CurrentCapabilities(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("capabilities = %+v, want %+v", got, want)
+	}
+}
+
+func TestTracingCapabilitiesRejectsUnsupportedMethods(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/tracing/capabilities", nil)
+			resp := httptest.NewRecorder()
+			experimentalRouter().ServeHTTP(resp, req)
+			if resp.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+			}
+		})
 	}
 }
