@@ -16,11 +16,12 @@ func resetTracing(t *testing.T) {
 	t.Helper()
 	enabled := false
 	output := ""
-	if err := tracer.Configure(tracer.ConfigPatch{Enabled: &enabled, Output: &output}); err != nil {
+	sessionID := ""
+	if err := tracer.Configure(tracer.ConfigPatch{Enabled: &enabled, Output: &output, SessionID: &sessionID}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_ = tracer.Configure(tracer.ConfigPatch{Enabled: &enabled, Output: &output})
+		_ = tracer.Configure(tracer.ConfigPatch{Enabled: &enabled, Output: &output, SessionID: &sessionID})
 	})
 }
 
@@ -130,5 +131,38 @@ func TestTracingCapabilitiesRejectsUnsupportedMethods(t *testing.T) {
 				t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 			}
 		})
+	}
+}
+
+func TestPatchTracingSessionIDSetOmitAndClear(t *testing.T) {
+	resetTracing(t)
+	resp, info := tracingRequest(t, patchTracing, http.MethodPatch, `{"session_id":"session-one"}`)
+	if resp.Code != http.StatusOK || info.SessionID != "session-one" {
+		t.Fatalf("set session status=%d info=%+v body=%s", resp.Code, info, resp.Body.String())
+	}
+
+	resp, info = tracingRequest(t, patchTracing, http.MethodPatch, `{"enabled":false}`)
+	if resp.Code != http.StatusOK || info.SessionID != "session-one" {
+		t.Fatalf("omitted session status=%d info=%+v body=%s", resp.Code, info, resp.Body.String())
+	}
+
+	resp, info = tracingRequest(t, patchTracing, http.MethodPatch, `{"session_id":""}`)
+	if resp.Code != http.StatusOK || info.SessionID != "" {
+		t.Fatalf("clear session status=%d info=%+v body=%s", resp.Code, info, resp.Body.String())
+	}
+}
+
+func TestLegacyTracingPayloadRemainsCompatible(t *testing.T) {
+	resetTracing(t)
+	resp, info := tracingRequest(t, patchTracing, http.MethodPatch, `{"enabled":true,"output":""}`)
+	if resp.Code != http.StatusOK || !info.Enabled || info.Output != "" || info.SessionID != "" {
+		t.Fatalf("legacy patch status=%d info=%+v body=%s", resp.Code, info, resp.Body.String())
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := raw["session_id"]; !ok || value != "" {
+		t.Fatalf("session_id must be explicit in tracing state: %v", raw)
 	}
 }
