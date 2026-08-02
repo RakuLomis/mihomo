@@ -18,7 +18,11 @@ type goldenCoverage struct {
 }
 
 func TestCompleteGoldenEvents(t *testing.T) {
-	paths, err := filepath.Glob("testdata/complete/*.jsonl")
+	fixtureRoot := os.Getenv("TRAFFICTRACER_GOLDEN_DIR")
+	if fixtureRoot == "" {
+		fixtureRoot = "testdata/complete"
+	}
+	paths, err := filepath.Glob(filepath.Join(fixtureRoot, "*.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
