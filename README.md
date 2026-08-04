@@ -18,9 +18,26 @@
   </a>
 </p>
 
-## TrafficTracer 三仓联动 QuickStart
+## TrafficTracer Complete QuickStart
 
-这套流程对应以下分支，并以三个仓库位于同一父目录为例：
+推荐入口是 `TrafficTracer` 总仓的 `Complete` 分支；它通过 submodule 和 `complete/components.lock.yaml` 固定本核心、TrafficTracer Worker 与 Clash Verge UI，不再要求手工对齐三个 sibling checkout：
+
+```bash
+git clone --branch Complete --recurse-submodules \
+  git@github.com:RakuLomis/TrafficTracer.git
+cd TrafficTracer
+make bootstrap
+make check-toolchain
+make dev
+```
+
+在 UI 中导入代理配置，选择 `verge-mihomo-tt`，测速并选择节点，安装服务后开启 TUN，再进入“流量追踪”。可手工运行一个目标，也可加载目标 YAML 后全选或选择子集；批次严格按 YAML 顺序串行执行 capture → Chrome cleanup → analysis → checkpoint，失败或 Worker 中断后可从准确目标继续。每个子目标形成独立 Session，可直接查看连接级请求、代理前后五元组和 PCAP 索引。
+
+Complete 自动按任务开启和恢复 tracing；不要寻找或使用设置侧栏中的独立 tracing 开关。Linux 未显式设置 TUN `device` 时，Mihomo 默认创建 `Meta`。自定义 Session root 必须是可写的绝对路径，切换 root 后重新执行环境检测。完整操作、打包和升级流程见总仓 `docs/complete/quickstart.md`。
+
+## 历史三仓手工联动参考（不用于 Complete 构建）
+
+以下流程仅保留给旧版独立 CLI 调试，并以三个仓库位于同一父目录为例。它包含已经从 Complete UI 删除的手工 tracing 开关，不能作为当前产品操作说明：
 
 | 组件 | 分支 | 职责 |
 |---|---|---|
