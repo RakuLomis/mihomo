@@ -21,7 +21,7 @@ func TestTCPEventsLinkNormalizedPreAndPostFlows(t *testing.T) {
 	postFlow.Source, postFlow.Scope = "dialer_socket", "physical"
 	session := tr.beginTCPWithFlow("tcp-1", preFlow, "legacy-src", "legacy-dst", "", "", "", "")
 	session.ObserveOuterFlow(traffictrace.OuterFlowObservation{OuterConnID: "outer-1", Flow: postFlow})
-	session.ProxyDial("proxy", "ss", "proxy.example:8443", EndpointInfo{Remote: "logical.example:8443", Scope: "logical"})
+	session.ProxyDial("proxy", "ss", "proxy.example:8443", EndpointInfo{Local: "outer-1", Remote: "logical.example:8443", Scope: "logical"})
 	session.Close(0, 0, StatusClosed, "", nil)
 	events := decodeEvents(t, output.Bytes())
 	if len(events) != 3 || events[0].PreFlow == nil || events[0].PreFlow.Key != preFlow.Key {
@@ -29,6 +29,9 @@ func TestTCPEventsLinkNormalizedPreAndPostFlows(t *testing.T) {
 	}
 	if events[1].PostFlow == nil || events[1].PostFlow.Key != postFlow.Key || events[1].PostFlow.Scope != "physical" || events[1].OuterConnID != "outer-1" {
 		t.Fatalf("tcp_proxy_dial lost post-flow: %+v", events[1])
+	}
+	if events[1].OutSrc != "203.0.113.10:3000" || events[1].OutDst != "203.0.113.20:8443" {
+		t.Fatalf("tcp legacy endpoints diverged from post-flow: %+v", events[1])
 	}
 }
 
@@ -41,13 +44,16 @@ func TestUDPOutCarriesPerPacketPreFlow(t *testing.T) {
 	post := testFlow("udp", "203.0.113.10:3000", "203.0.113.20:443")
 	session := tr.beginUDPWithFlow("shared-source", first, "src", "dst", "", "", "", "")
 	session.ObserveOuterFlow(traffictrace.OuterFlowObservation{OuterConnID: "outer-udp", Flow: post})
-	session.ProxyDial("proxy", "tuic", "proxy.example:443", EndpointInfo{})
+	session.ProxyDial("proxy", "tuic", "proxy.example:443", EndpointInfo{Local: "outer-udp", Remote: "logical.example:443"})
 	session.PacketOutWithFlow(first, "src", "dst-1", 10)
 	session.PacketOutWithFlow(second, "src", "dst-2", 20)
 	session.Close(30, 0, StatusClosed, "", nil)
 	events := decodeEvents(t, output.Bytes())
 	if len(events) != 5 || events[1].PostFlow == nil || !events[1].PostFlow.Shared || events[1].OuterConnID != "outer-udp" {
 		t.Fatalf("unexpected udp proxy event: %+v", events)
+	}
+	if events[1].OutSrc != "203.0.113.10:3000" || events[1].OutDst != "203.0.113.20:443" {
+		t.Fatalf("udp legacy endpoints diverged from post-flow: %+v", events[1])
 	}
 	if events[2].PreFlow == nil || events[2].PreFlow.Key != first.Key || events[3].PreFlow == nil || events[3].PreFlow.Key != second.Key || events[2].ConnKey != events[3].ConnKey {
 		t.Fatalf("udp packet flows were not preserved: %+v", events)

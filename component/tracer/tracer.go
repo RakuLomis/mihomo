@@ -518,6 +518,12 @@ func normalizedEndpointMetadata(endpoint EndpointInfo, flow *traffictrace.FlowTu
 
 func legacyPostEndpoints(endpoint EndpointInfo, flow *traffictrace.FlowTuple) (string, string) {
 	outSrc, outDst := endpoint.Local, endpoint.Remote
+	if flow != nil && flow.Complete {
+		return net.JoinHostPort(flow.SrcIP, fmt.Sprintf("%d", flow.SrcPort)),
+			net.JoinHostPort(flow.DstIP, fmt.Sprintf("%d", flow.DstPort))
+	}
+
+	// Preserve best-effort legacy behavior for incomplete observations.
 	if flow == nil {
 		return outSrc, outDst
 	}
