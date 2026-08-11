@@ -88,13 +88,14 @@ func ListenPacket(ctx context.Context, network, address string, rAddrPort netip.
 	cfg := applyOptions(options...)
 
 	lc := &net.ListenConfig{}
+	interfaceName := cfg.interfaceName
 	if cfg.addrReuse {
 		addrReuseToListenConfig(lc)
 	}
 	if DefaultSocketHook != nil { // ignore interfaceName, routingMark when DefaultSocketHook not null (in CMFA)
 		socketHookToListenConfig(lc)
+		interfaceName = ""
 	} else {
-		interfaceName := cfg.interfaceName
 		if interfaceName == "" {
 			if finder := DefaultInterfaceFinder.Load(); finder != nil {
 				interfaceName = finder.FindInterfaceName(rAddrPort.Addr())
@@ -128,8 +129,25 @@ func ListenPacket(ctx context.Context, network, address string, rAddrPort netip.
 	if rAddrPort.IsValid() {
 		remoteAddr = net.UDPAddrFromAddrPort(rAddrPort)
 	}
-	traffictrace.ObserveOuterFlow(ctx, network, packetConn.LocalAddr(), remoteAddr, "dialer_socket")
+	localAddr := effectivePacketLocalAddr(
+		packetConn.LocalAddr(), network, rAddrPort, interfaceName,
+	)
+	traffictrace.ObserveOuterFlow(ctx, network, localAddr, remoteAddr, "dialer_socket")
 	return packetConn, nil
+}
+
+func effectivePacketLocalAddr(localAddr net.Addr, network string, remoteAddr netip.AddrPort, interfaceName string) net.Addr {
+	local, ok := traffictrace.AddrPortFromNetAddr(localAddr)
+	if !ok || !local.Addr().IsUnspecified() || interfaceName == "" || !remoteAddr.IsValid() {
+		return localAddr
+	}
+	resolved, err := LookupLocalAddrFromIfaceName(
+		interfaceName, network, remoteAddr.Addr(), int(local.Port()),
+	)
+	if err != nil {
+		return localAddr
+	}
+	return resolved
 }
 
 func SetTcpConcurrent(concurrent bool) {

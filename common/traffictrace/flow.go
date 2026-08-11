@@ -46,13 +46,17 @@ func NewFlowTuple(network string, src, dst netip.AddrPort, dstHost, source, scop
 	}
 	if src.IsValid() {
 		src = normalizeAddrPort(src)
-		flow.SrcIP = src.Addr().String()
 		flow.SrcPort = src.Port()
+		if !src.Addr().IsUnspecified() {
+			flow.SrcIP = src.Addr().String()
+		}
 	}
 	if dst.IsValid() {
 		dst = normalizeAddrPort(dst)
-		flow.DstIP = dst.Addr().String()
 		flow.DstPort = dst.Port()
+		if !dst.Addr().IsUnspecified() {
+			flow.DstIP = dst.Addr().String()
+		}
 	}
 	flow.Complete = isUsableEndpoint(src) && isUsableEndpoint(dst) && flow.Network != ""
 	if flow.Complete {

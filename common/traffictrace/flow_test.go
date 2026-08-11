@@ -19,8 +19,15 @@ func TestNewFlowTupleNormalizesAddresses(t *testing.T) {
 
 func TestNewFlowTupleRejectsUnspecifiedEndpoint(t *testing.T) {
 	flow := NewFlowTuple("udp", netip.MustParseAddrPort("0.0.0.0:1234"), netip.MustParseAddrPort("198.51.100.1:53"), "", "test", "physical", false)
-	if flow.Complete || flow.Key != "" {
+	if flow.Complete || flow.Key != "" || flow.SrcIP != "" || flow.SrcPort != 1234 {
 		t.Fatalf("unspecified endpoint must be incomplete: %+v", flow)
+	}
+}
+
+func TestNewFlowTupleOmitsIPv6UnspecifiedAddressButKeepsPort(t *testing.T) {
+	flow := NewFlowTuple("udp", netip.MustParseAddrPort("[::]:56571"), netip.MustParseAddrPort("101.227.12.8:443"), "", "dialer_socket", "physical", false)
+	if flow.Complete || flow.Key != "" || flow.SrcIP != "" || flow.SrcPort != 56571 {
+		t.Fatalf("IPv6 unspecified endpoint must retain only its port: %+v", flow)
 	}
 }
 
