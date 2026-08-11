@@ -7,6 +7,8 @@
     "normalized_flow",
     "outer_conn_id",
     "session_id",
-    "shared_outer_flow"
+    "shared_outer_flow",
+    "egress_outcome",
+    "session_sink_isolation"
   ]
 }

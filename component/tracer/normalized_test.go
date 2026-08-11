@@ -59,3 +59,54 @@ func TestUDPOutCarriesPerPacketPreFlow(t *testing.T) {
 		t.Fatalf("udp packet flows were not preserved: %+v", events)
 	}
 }
+
+func TestRejectLeafHasOutcomeWithoutInvalidPostFlow(t *testing.T) {
+	var output bytes.Buffer
+	tr := newTracer(&output)
+	tr.enabled.Store(true)
+	session := tr.beginTCP("tcp-reject", "src", "dst", "blocked.example", "", "", "")
+	session.ProxyDialWithLeaf(
+		"policy-group", "Selector", "REJECT", "Reject", "",
+		EndpointInfo{Scope: "unknown"},
+	)
+	session.Close(0, 0, StatusClosed, "", nil)
+
+	events := decodeEvents(t, output.Bytes())
+	if len(events) != 3 {
+		t.Fatalf("got %d events, want 3", len(events))
+	}
+	dial := events[1]
+	if dial.PostFlow != nil || dial.EgressOutcome != EgressRejected ||
+		dial.Proxy != "policy-group" || dial.ProxyType != "Selector" ||
+		dial.LeafProxy != "REJECT" || dial.LeafProxyType != "Reject" {
+		t.Fatalf("unexpected reject dial event: %+v", dial)
+	}
+	closeEvent := events[2]
+	if closeEvent.Status != StatusRejected || closeEvent.Stage != "reject" {
+		t.Fatalf("reject close was not normalized: %+v", closeEvent)
+	}
+}
+
+func TestGroupLeafTypeControlsSharedPostFlowAndOutcome(t *testing.T) {
+	var output bytes.Buffer
+	tr := newTracer(&output)
+	tr.enabled.Store(true)
+	session := tr.beginUDP("udp-shared-leaf", "src", "dst", "", "", "", "")
+	session.ProxyDialWithLeaf(
+		"automatic", "URLTest", "tuic-node", "Tuic", "proxy.example:443",
+		EndpointInfo{
+			Local: "192.0.2.10:3000", Remote: "198.51.100.20:443",
+			Scope: "physical", Source: "socket",
+		},
+	)
+	session.Close(0, 0, StatusClosed, "", nil)
+
+	events := decodeEvents(t, output.Bytes())
+	dial := events[1]
+	if dial.PostFlow == nil || !dial.PostFlow.Complete || !dial.PostFlow.Shared {
+		t.Fatalf("leaf shared semantics missing: %+v", dial)
+	}
+	if dial.EgressOutcome != EgressProxy || dial.LeafProxyType != "Tuic" {
+		t.Fatalf("unexpected leaf outcome: %+v", dial)
+	}
+}

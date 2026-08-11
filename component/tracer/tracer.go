@@ -36,6 +36,17 @@ const (
 	StatusCanceled     = "canceled"
 )
 
+const (
+	EgressDirect       = "direct"
+	EgressProxy        = "proxy"
+	EgressRejected     = "rejected"
+	EgressRejectedDrop = "rejected_drop"
+	EgressInternalDNS  = "internal_dns"
+	EgressPass         = "pass"
+	EgressCompatible   = "compatible"
+	EgressUnknown      = "unknown"
+)
+
 type event struct {
 	SchemaVersion  int                     `json:"schema_version"`
 	SessionID      string                  `json:"session_id,omitempty"`
@@ -57,6 +68,9 @@ type event struct {
 	InName         string                  `json:"in_name,omitempty"`
 	Proxy          string                  `json:"proxy,omitempty"`
 	ProxyType      string                  `json:"proxy_type,omitempty"`
+	LeafProxy      string                  `json:"leaf_proxy,omitempty"`
+	LeafProxyType  string                  `json:"leaf_proxy_type,omitempty"`
+	EgressOutcome  string                  `json:"egress_outcome,omitempty"`
 	ProxyAddr      string                  `json:"proxy_addr,omitempty"`
 	OutSrc         string                  `json:"out_src,omitempty"`
 	OutDst         string                  `json:"out_dst,omitempty"`
@@ -95,18 +109,27 @@ type Tracer struct {
 
 	mu        sync.Mutex
 	stdout    io.Writer
+	sink      *traceSink
+	lastError string
+}
+
+type traceSink struct {
 	writer    *bufio.Writer
 	file      *os.File
 	output    string
 	sessionID string
-	lastError string
+	refs      int64
+	retired   bool
 	failed    bool
 }
 
 var globalTracer = newTracer(os.Stdout)
 
 func newTracer(stdout io.Writer) *Tracer {
-	return &Tracer{stdout: stdout, writer: bufio.NewWriter(stdout)}
+	return &Tracer{
+		stdout: stdout,
+		sink:   &traceSink{writer: bufio.NewWriter(stdout)},
+	}
 }
 
 func Configure(patch ConfigPatch) error {
@@ -114,49 +137,48 @@ func Configure(patch ConfigPatch) error {
 }
 
 func (t *Tracer) configure(patch ConfigPatch) error {
-	var (
-		nextWriter *bufio.Writer
-		nextFile   *os.File
-	)
-	if patch.Output != nil {
-		if *patch.Output == "" {
-			nextWriter = bufio.NewWriter(t.stdout)
-		} else {
-			f, err := os.OpenFile(*patch.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-			if err != nil {
-				return fmt.Errorf("tracer: open output file: %w", err)
-			}
-			nextFile = f
-			nextWriter = bufio.NewWriter(f)
-		}
-	}
-
 	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	nextOutput := t.sink.output
+	nextSessionID := t.sink.sessionID
 	if patch.Output != nil {
-		oldWriter, oldFile := t.writer, t.file
-		t.writer, t.file, t.output = nextWriter, nextFile, *patch.Output
+		nextOutput = *patch.Output
+	}
+	if patch.SessionID != nil {
+		nextSessionID = *patch.SessionID
+	}
+	rotateSink := patch.Output != nil || nextSessionID != t.sink.sessionID
+	if rotateSink {
+		nextSink, err := t.openSink(nextOutput, nextSessionID)
+		if err != nil {
+			return err
+		}
+		oldSink := t.sink
+		t.sink = nextSink
+		oldSink.retired = true
 		t.lastError = ""
-		t.failed = false
-		if oldWriter != nil {
-			_ = oldWriter.Flush()
-		}
-		if oldFile != nil {
-			_ = oldFile.Close()
-		}
+		t.closeSinkIfUnused(oldSink)
 	}
 	if patch.Enabled != nil {
-		if *patch.Enabled && t.failed {
+		if *patch.Enabled && t.sink.failed {
 			err := fmt.Errorf("tracer: output unavailable: %s", t.lastError)
-			t.mu.Unlock()
 			return err
 		}
 		t.enabled.Store(*patch.Enabled)
 	}
-	if patch.SessionID != nil {
-		t.sessionID = *patch.SessionID
-	}
-	t.mu.Unlock()
 	return nil
+}
+
+func (t *Tracer) openSink(output, sessionID string) (*traceSink, error) {
+	if output == "" {
+		return &traceSink{writer: bufio.NewWriter(t.stdout), sessionID: sessionID}, nil
+	}
+	f, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("tracer: open output file: %w", err)
+	}
+	return &traceSink{writer: bufio.NewWriter(f), file: f, output: output, sessionID: sessionID}, nil
 }
 
 func SetEnabled(v bool) {
@@ -184,44 +206,87 @@ func (t *Tracer) status() Status {
 	defer t.mu.Unlock()
 	return Status{
 		Enabled:        t.enabled.Load(),
-		Output:         t.output,
-		SessionID:      t.sessionID,
+		Output:         t.sink.output,
+		SessionID:      t.sink.sessionID,
 		LastError:      t.lastError,
 		WriteErrors:    t.writeErrors.Load(),
 		ActiveSessions: t.activeSessions.Load(),
 	}
 }
 
-func (t *Tracer) write(e event) {
+func (t *Tracer) acquireSink() *traceSink {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.enabled.Load() || t.sink == nil || t.sink.failed {
+		return nil
+	}
+	t.sink.refs++
+	return t.sink
+}
+
+func (t *Tracer) releaseSink(sink *traceSink) {
+	if sink == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if sink.refs > 0 {
+		sink.refs--
+	}
+	t.closeSinkIfUnused(sink)
+}
+
+func (t *Tracer) closeSinkIfUnused(sink *traceSink) {
+	if sink == nil || !sink.retired || sink.refs != 0 {
+		return
+	}
+	if sink.writer != nil {
+		_ = sink.writer.Flush()
+	}
+	if sink.file != nil {
+		_ = sink.file.Close()
+	}
+	sink.writer = nil
+	sink.file = nil
+}
+
+func (t *Tracer) writeTo(sink *traceSink, e event) {
+	if sink == nil {
+		return
+	}
 	e.SchemaVersion = EventSchemaVersion
 	e.EventSeq = t.eventSeq.Add(1)
 	e.Ts = time.Now().UTC().Format(time.RFC3339Nano)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	e.SessionID = t.sessionID
+	e.SessionID = sink.sessionID
 	b, err := json.Marshal(e)
 	if err != nil {
-		t.failed = true
+		sink.failed = true
 		t.lastError = err.Error()
 		t.writeErrors.Add(1)
-		t.enabled.Store(false)
+		if sink == t.sink {
+			t.enabled.Store(false)
+		}
 		return
 	}
-	if t.writer == nil || t.failed {
+	if sink.writer == nil || sink.failed {
 		return
 	}
-	if _, err = t.writer.Write(b); err == nil {
-		err = t.writer.WriteByte('\n')
+	if _, err = sink.writer.Write(b); err == nil {
+		err = sink.writer.WriteByte('\n')
 	}
 	if err == nil {
-		err = t.writer.Flush()
+		err = sink.writer.Flush()
 	}
 	if err != nil {
-		t.failed = true
+		sink.failed = true
 		t.lastError = err.Error()
 		t.writeErrors.Add(1)
-		t.enabled.Store(false)
+		if sink == t.sink {
+			t.enabled.Store(false)
+		}
 	}
 }
 
@@ -304,14 +369,16 @@ func addrString(addr net.Addr) string {
 
 type TCPSession struct {
 	tracer  *Tracer
+	sink    *traceSink
 	id      string
 	start   time.Time
 	active  bool
 	once    sync.Once
 	preFlow traffictrace.FlowTuple
 
-	mu    sync.RWMutex
-	outer traffictrace.OuterFlowObservation
+	mu            sync.RWMutex
+	outer         traffictrace.OuterFlowObservation
+	egressOutcome string
 }
 
 var _ traffictrace.OuterFlowObserver = (*TCPSession)(nil)
@@ -329,12 +396,13 @@ func (t *Tracer) beginTCP(id, src, dst, host, process, processPath, inName strin
 }
 
 func (t *Tracer) beginTCPWithFlow(id string, preFlow traffictrace.FlowTuple, src, dst, host, process, processPath, inName string) *TCPSession {
-	s := &TCPSession{tracer: t, id: id, start: time.Now(), active: t.enabled.Load(), preFlow: preFlow}
+	sink := t.acquireSink()
+	s := &TCPSession{tracer: t, sink: sink, id: id, start: time.Now(), active: sink != nil, preFlow: preFlow}
 	if !s.active {
 		return s
 	}
 	t.activeSessions.Add(1)
-	t.write(event{
+	t.writeTo(s.sink, event{
 		Type: TCPConnect, Network: "tcp", ConnID: id, PreFlow: flowPointer(preFlow),
 		Src: src, Dst: dst, Host: host,
 		Process: process, ProcessPath: processPath, InName: inName,
@@ -352,18 +420,25 @@ func (s *TCPSession) ObserveOuterFlow(observation traffictrace.OuterFlowObservat
 }
 
 func (s *TCPSession) ProxyDial(proxy, proxyType, proxyAddr string, endpoint EndpointInfo) {
+	s.ProxyDialWithLeaf(proxy, proxyType, proxy, proxyType, proxyAddr, endpoint)
+}
+
+func (s *TCPSession) ProxyDialWithLeaf(proxy, proxyType, leafProxy, leafProxyType, proxyAddr string, endpoint EndpointInfo) {
 	if !s.active {
 		return
 	}
-	s.mu.RLock()
+	s.mu.Lock()
 	outer := s.outer
-	s.mu.RUnlock()
-	postFlow, outerConnID := normalizedPostFlow("tcp", proxyType, endpoint, outer)
+	s.egressOutcome = classifyEgress(leafProxyType)
+	egressOutcome := s.egressOutcome
+	s.mu.Unlock()
+	postFlow, outerConnID := normalizedPostFlow("tcp", leafProxyType, endpoint, outer)
 	outSrc, outDst := legacyPostEndpoints(endpoint, postFlow)
 	endpointScope, endpointSource := normalizedEndpointMetadata(endpoint, postFlow)
-	s.tracer.write(event{
+	s.tracer.writeTo(s.sink, event{
 		Type: TCPProxyDial, Network: "tcp", ConnID: s.id,
 		Proxy: proxy, ProxyType: proxyType, ProxyAddr: proxyAddr,
+		LeafProxy: leafProxy, LeafProxyType: leafProxyType, EgressOutcome: egressOutcome,
 		OutSrc: outSrc, OutDst: outDst,
 		EndpointScope: endpointScope, EndpointSource: endpointSource,
 		PostFlow: postFlow, OuterConnID: outerConnID,
@@ -375,19 +450,25 @@ func (s *TCPSession) Close(bytesUp, bytesDown int64, status, stage string, cause
 		return
 	}
 	s.once.Do(func() {
-		s.tracer.write(event{
+		s.mu.RLock()
+		egressOutcome := s.egressOutcome
+		s.mu.RUnlock()
+		status, stage = terminalForEgress(egressOutcome, status, stage)
+		s.tracer.writeTo(s.sink, event{
 			Type: TCPClose, Network: "tcp", ConnID: s.id,
 			BytesUp: bytesUp, BytesDown: bytesDown,
 			DurationMs: time.Since(s.start).Milliseconds(),
 			Status:     status, Stage: stage, Error: errorString(cause),
 		})
 		s.tracer.activeSessions.Add(-1)
+		s.tracer.releaseSink(s.sink)
 	})
 }
 
 type UDPSession struct {
 	tracer  *Tracer
 	key     string
+	sink    *traceSink
 	start   time.Time
 	active  bool
 	once    sync.Once
@@ -395,9 +476,10 @@ type UDPSession struct {
 	seqIn   atomic.Uint64
 	preFlow traffictrace.FlowTuple
 
-	mu        sync.RWMutex
-	proxyName string
-	outer     traffictrace.OuterFlowObservation
+	mu            sync.RWMutex
+	proxyName     string
+	outer         traffictrace.OuterFlowObservation
+	egressOutcome string
 }
 
 var _ traffictrace.OuterFlowObserver = (*UDPSession)(nil)
@@ -415,12 +497,13 @@ func (t *Tracer) beginUDP(key, src, dst, host, process, processPath, inName stri
 }
 
 func (t *Tracer) beginUDPWithFlow(key string, preFlow traffictrace.FlowTuple, src, dst, host, process, processPath, inName string) *UDPSession {
-	s := &UDPSession{tracer: t, key: key, start: time.Now(), active: t.enabled.Load(), preFlow: preFlow}
+	sink := t.acquireSink()
+	s := &UDPSession{tracer: t, sink: sink, key: key, start: time.Now(), active: sink != nil, preFlow: preFlow}
 	if !s.active {
 		return s
 	}
 	t.activeSessions.Add(1)
-	t.write(event{
+	t.writeTo(s.sink, event{
 		Type: UDPConnect, Network: "udp", ConnKey: key, PreFlow: flowPointer(preFlow),
 		Src: src, Dst: dst, Host: host,
 		Process: process, ProcessPath: processPath, InName: inName,
@@ -438,19 +521,26 @@ func (s *UDPSession) ObserveOuterFlow(observation traffictrace.OuterFlowObservat
 }
 
 func (s *UDPSession) ProxyDial(proxy, proxyType, proxyAddr string, endpoint EndpointInfo) {
+	s.ProxyDialWithLeaf(proxy, proxyType, proxy, proxyType, proxyAddr, endpoint)
+}
+
+func (s *UDPSession) ProxyDialWithLeaf(proxy, proxyType, leafProxy, leafProxyType, proxyAddr string, endpoint EndpointInfo) {
 	s.mu.Lock()
 	s.proxyName = proxy
 	outer := s.outer
+	s.egressOutcome = classifyEgress(leafProxyType)
+	egressOutcome := s.egressOutcome
 	s.mu.Unlock()
 	if !s.active {
 		return
 	}
-	postFlow, outerConnID := normalizedPostFlow("udp", proxyType, endpoint, outer)
+	postFlow, outerConnID := normalizedPostFlow("udp", leafProxyType, endpoint, outer)
 	outSrc, outDst := legacyPostEndpoints(endpoint, postFlow)
 	endpointScope, endpointSource := normalizedEndpointMetadata(endpoint, postFlow)
-	s.tracer.write(event{
+	s.tracer.writeTo(s.sink, event{
 		Type: UDPProxyDial, Network: "udp", ConnKey: s.key,
 		Proxy: proxy, ProxyType: proxyType, ProxyAddr: proxyAddr,
+		LeafProxy: leafProxy, LeafProxyType: leafProxyType, EgressOutcome: egressOutcome,
 		OutSrc: outSrc, OutDst: outDst,
 		EndpointScope: endpointScope, EndpointSource: endpointSource,
 		PostFlow: postFlow, OuterConnID: outerConnID,
@@ -468,7 +558,7 @@ func (s *UDPSession) PacketOutWithFlow(preFlow traffictrace.FlowTuple, src, dst 
 	s.mu.RLock()
 	proxy := s.proxyName
 	s.mu.RUnlock()
-	s.tracer.write(event{
+	s.tracer.writeTo(s.sink, event{
 		Type: UDPOut, Network: "udp", ConnKey: s.key, PreFlow: flowPointer(preFlow),
 		Seq: s.seqOut.Add(1), Src: src, Dst: dst, Len: length, Proxy: proxy,
 	})
@@ -478,7 +568,7 @@ func (s *UDPSession) PacketIn(from string, length int) {
 	if !s.active || !s.tracer.enabled.Load() {
 		return
 	}
-	s.tracer.write(event{
+	s.tracer.writeTo(s.sink, event{
 		Type: UDPIn, Network: "udp", ConnKey: s.key, PreFlow: flowPointer(s.preFlow),
 		Seq: s.seqIn.Add(1), From: from, Len: length,
 	})
@@ -489,13 +579,18 @@ func (s *UDPSession) Close(bytesUp, bytesDown int64, status, stage string, cause
 		return
 	}
 	s.once.Do(func() {
-		s.tracer.write(event{
+		s.mu.RLock()
+		egressOutcome := s.egressOutcome
+		s.mu.RUnlock()
+		status, stage = terminalForEgress(egressOutcome, status, stage)
+		s.tracer.writeTo(s.sink, event{
 			Type: UDPClose, Network: "udp", ConnKey: s.key,
 			BytesUp: bytesUp, BytesDown: bytesDown,
 			DurationMs: time.Since(s.start).Milliseconds(),
 			Status:     status, Stage: stage, Error: errorString(cause),
 		})
 		s.tracer.activeSessions.Add(-1)
+		s.tracer.releaseSink(s.sink)
 	})
 }
 
@@ -503,10 +598,44 @@ func normalizedPostFlow(network, proxyType string, endpoint EndpointInfo, outer 
 	if outer.OuterConnID != "" {
 		flow := outer.Flow
 		flow.Shared = potentiallySharedProxy(proxyType)
-		return &flow, outer.OuterConnID
+		if flow.Complete {
+			return &flow, outer.OuterConnID
+		}
+		return nil, outer.OuterConnID
 	}
 	flow := traffictrace.NewFlowTupleFromStrings(network, endpoint.Local, endpoint.Remote, endpoint.Source, endpoint.Scope, potentiallySharedProxy(proxyType))
+	if !flow.Complete {
+		return nil, ""
+	}
 	return &flow, ""
+}
+
+func classifyEgress(proxyType string) string {
+	switch strings.ToLower(strings.ReplaceAll(proxyType, "-", "")) {
+	case "direct":
+		return EgressDirect
+	case "reject":
+		return EgressRejected
+	case "rejectdrop":
+		return EgressRejectedDrop
+	case "dns":
+		return EgressInternalDNS
+	case "pass":
+		return EgressPass
+	case "compatible":
+		return EgressCompatible
+	case "":
+		return EgressUnknown
+	default:
+		return EgressProxy
+	}
+}
+
+func terminalForEgress(outcome, status, stage string) (string, string) {
+	if (outcome == EgressRejected || outcome == EgressRejectedDrop) && status == StatusClosed {
+		return StatusRejected, "reject"
+	}
+	return status, stage
 }
 
 func normalizedEndpointMetadata(endpoint EndpointInfo, flow *traffictrace.FlowTuple) (string, string) {

@@ -434,7 +434,8 @@ func handleUDPConn(packet C.PacketAdapter) {
 				return nil, nil, err
 			}
 			logMetadata(metadata, rule, rawPc)
-			trace.ProxyDial(proxy.Name(), proxy.Type().String(), proxy.Addr(), tracer.ExtractEndpoints(rawPc, proxy.Addr()))
+			leafName, leafType := traceProxyLeaf(proxy, metadata)
+			trace.ProxyDialWithLeaf(proxy.Name(), proxy.Type().String(), leafName, leafType, proxy.Addr(), tracer.ExtractEndpoints(rawPc, proxy.Addr()))
 
 			pc := statistic.NewUDPTracker(rawPc, statistic.DefaultManager, metadata, rule, 0, 0, true)
 
@@ -604,7 +605,8 @@ func handleTCPConn(connCtx C.ConnContext) {
 	}
 	logMetadata(metadata, rule, remoteConn)
 
-	trace.ProxyDial(proxy.Name(), proxy.Type().String(), proxy.Addr(), tracer.ExtractEndpoints(remoteConn, proxy.Addr()))
+	leafName, leafType := traceProxyLeaf(proxy, metadata)
+	trace.ProxyDialWithLeaf(proxy.Name(), proxy.Type().String(), leafName, leafType, proxy.Addr(), tracer.ExtractEndpoints(remoteConn, proxy.Addr()))
 
 	remoteConn = statistic.NewTCPTracker(remoteConn, statistic.DefaultManager, metadata, rule, int64(peekLen), 0, true)
 	traceTracker = remoteConn.(statistic.Tracker)
@@ -618,6 +620,18 @@ func handleTCPConn(connCtx C.ConnContext) {
 	defer peekMutex.Unlock()
 	_ = conn.SetReadDeadline(time.Time{}) // reset
 	handleSocket(conn, remoteConn)
+}
+
+func traceProxyLeaf(proxy C.ProxyAdapter, metadata *C.Metadata) (string, string) {
+	leaf := proxy
+	for depth := 0; depth < 32; depth++ {
+		next := leaf.Unwrap(metadata, false)
+		if next == nil {
+			break
+		}
+		leaf = next
+	}
+	return leaf.Name(), leaf.Type().String()
 }
 
 func logMetadataErr(metadata *C.Metadata, rule C.Rule, proxy C.ProxyAdapter, err error) {

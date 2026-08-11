@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -399,5 +400,68 @@ func TestLegacyEventParserIgnoresCompleteEnvelopeFields(t *testing.T) {
 	if legacy.Type != TCPConnect || legacy.Network != "tcp" || legacy.ConnID != "legacy-conn" ||
 		legacy.Src != "127.0.0.1:14000" || legacy.Dst != "1.1.1.1:443" || legacy.Host != "example.com" {
 		t.Fatalf("legacy fields changed: %+v", legacy)
+	}
+}
+
+func TestSessionKeepsSinkGenerationAfterReconfigure(t *testing.T) {
+	tr := newTracer(&bytes.Buffer{})
+	firstPath := filepath.Join(t.TempDir(), "first.jsonl")
+	secondPath := filepath.Join(t.TempDir(), "second.jsonl")
+	firstID := "session-first"
+	secondID := "session-second"
+	enabled := true
+
+	if err := tr.configure(ConfigPatch{
+		Enabled: &enabled, Output: &firstPath, SessionID: &firstID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first := tr.beginTCP(
+		"tcp-first", "src-a", "dst-a", "first.example", "", "", "",
+	)
+
+	if err := tr.configure(ConfigPatch{
+		Output: &secondPath, SessionID: &secondID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second := tr.beginTCP(
+		"tcp-second", "src-b", "dst-b", "second.example", "", "", "",
+	)
+	second.ProxyDial("DIRECT", "Direct", "", EndpointInfo{
+		Local: "192.0.2.2:2000", Remote: "198.51.100.2:443",
+		Scope: "physical", Source: "socket",
+	})
+	second.Close(2, 3, StatusClosed, "", nil)
+
+	// These late events belong to the first capture even though the global
+	// tracing configuration now points at the second capture.
+	first.ProxyDial("DIRECT", "Direct", "", EndpointInfo{
+		Local: "192.0.2.1:1000", Remote: "198.51.100.1:443",
+		Scope: "physical", Source: "socket",
+	})
+	first.Close(4, 5, StatusClosed, "", nil)
+
+	read := func(path string) []event {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return decodeEvents(t, data)
+	}
+	firstEvents := read(firstPath)
+	secondEvents := read(secondPath)
+	if len(firstEvents) != 3 || len(secondEvents) != 3 {
+		t.Fatalf("event counts first=%d second=%d", len(firstEvents), len(secondEvents))
+	}
+	for _, event := range firstEvents {
+		if event.SessionID != firstID || event.ConnID != "tcp-first" {
+			t.Fatalf("first sink contamination: %+v", event)
+		}
+	}
+	for _, event := range secondEvents {
+		if event.SessionID != secondID || event.ConnID != "tcp-second" {
+			t.Fatalf("second sink contamination: %+v", event)
+		}
 	}
 }
