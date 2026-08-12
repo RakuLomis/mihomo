@@ -19,6 +19,7 @@ var eventContractTypes = map[EventType]struct{}{
 	UDPOut:       {},
 	UDPIn:        {},
 	UDPClose:     {},
+	TraceBarrier: {},
 }
 
 func TestEveryEventTypeCarriesVersionedSessionEnvelope(t *testing.T) {
@@ -43,6 +44,9 @@ func TestEveryEventTypeCarriesVersionedSessionEnvelope(t *testing.T) {
 	udp.PacketOut("127.0.0.1:13000", "8.8.8.8:53", 30)
 	udp.PacketIn("8.8.8.8:53", 40)
 	udp.Close(30, 40, StatusClosed, "", nil)
+	if _, err := tr.barrier(); err != nil {
+		t.Fatal(err)
+	}
 
 	seen := make(map[EventType]int, len(eventContractTypes))
 	for _, event := range decodeEvents(t, output.Bytes()) {

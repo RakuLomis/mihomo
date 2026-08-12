@@ -307,7 +307,13 @@ cat /tmp/trace.jsonl | jq -r 'select(.type=="udp_out") | [.conn_key, .len] | @ts
 
 TrafficTracer 分支除了新增追踪功能外，还提供了完整的 REST API 用于流量监控和匹配。以下是流量匹配相关的核心接口。
 
-### 4.1 连接查询 (GET /connections)
+### 4.1 追踪截止点 (POST /experimental/tracing/barrier)
+
+当 tracing 已启用时，该接口在当前 sink 的写锁内分配 `event_seq`、写入并 flush 一个 `trace_barrier` 事件，然后返回同一 `session_id`、`event_seq`、时间和输出路径。返回即表示截止点已经持久化；截止点后的长连接事件仍会写入其原 sink。
+
+能力发现接口 `GET /experimental/tracing/capabilities` 以 `supports_trace_barrier: true` 声明支持。tracing 未启用或 sink 不可写时接口返回冲突错误，不生成伪截止点。
+
+### 4.2 连接查询 (GET /connections)
 
 获取当前所有活跃连接的快照信息:
 

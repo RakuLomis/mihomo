@@ -102,23 +102,18 @@ curl --unix-socket /tmp/verge/verge-mihomo.sock \
 
 成功时返回至少包含 `enabled` 的 JSON。返回 `404` 表示仍选择了标准核心，需要重新选择 `verge-mihomo-tt` 并重启。
 
-### 4. 验证 UI 追踪开关
+### 4. 验证 trace barrier
+
+Complete UI 是 tracing 的唯一控制入口；不要再从 Settings 维护第二个手工开关。每个捕获任务会临时开启 tracing，在 Chrome 与双侧 packet capture 停稳后调用：
 
 ```bash
-mkdir -p /tmp/mihomo-traffictracer
+curl -X POST --unix-socket /tmp/verge/verge-mihomo.sock \
+  http://localhost/experimental/tracing/barrier
 ```
 
-进入“设置 → Clash 设置”：
+成功响应包含 `session_id`、`event_seq`、`ts` 和 `output`，同时 JSONL 中已刷入同序号的 `trace_barrier` 事件。分析器只消费 `event_seq <= barrier.event_seq` 的事件；长连接在 barrier 后产生的 close 仍保留在原始 trace 中，但作为 late event 单独统计，不会改变本次分析快照。最后任务恢复此前的 tracing 状态和输出路径。
 
-1. 开启“TrafficTracer/流量追踪”。
-2. 将输出路径设置为绝对路径 `/tmp/mihomo-traffictracer/manual.jsonl`。
-3. 访问一个网页，然后检查日志：
-
-```bash
-tail -n 20 /tmp/mihomo-traffictracer/manual.jsonl
-```
-
-父目录必须预先存在且对核心可写。空输出路径表示写到核心标准输出。完成手工验证后可以关闭 UI 追踪；TrafficTracer 采集程序会按访问任务临时开启追踪，并在结束或异常时恢复原状态和原输出路径。
+`GET /experimental/tracing/capabilities` 必须返回 `supports_trace_barrier: true`。旧核心缺少该能力时 Complete 环境检测会阻止开始捕获，避免得到不可重复的分析结果。
 
 ### 5. 配置 TrafficTracer 采集器
 

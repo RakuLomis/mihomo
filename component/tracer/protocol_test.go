@@ -48,6 +48,7 @@ func TestProtocolConstantsMatchFixture(t *testing.T) {
 		CapabilitySharedOuterFlow,
 		CapabilityEgressOutcome,
 		CapabilitySessionSink,
+		CapabilityTraceBarrier,
 	}
 	if !reflect.DeepEqual(fixture.Capabilities, wantCapabilities) {
 		t.Fatalf("fixture capabilities = %q, want %q", fixture.Capabilities, wantCapabilities)
@@ -73,6 +74,7 @@ func TestCapabilitiesJSONKeysAndCurrentValues(t *testing.T) {
 		"supports_session_sink_isolation",
 		"supports_shared_outer_flow",
 		"supports_tcp",
+		"supports_trace_barrier",
 		"supports_udp",
 	}
 	gotKeys := make([]string, 0, len(got))
@@ -102,8 +104,8 @@ func TestCapabilitiesZeroValueIsExplicit(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 10 {
-		t.Fatalf("zero-value capabilities encoded %d fields, want 10: %s", len(got), data)
+	if len(got) != 11 {
+		t.Fatalf("zero-value capabilities encoded %d fields, want 11: %s", len(got), data)
 	}
 	if got["api_version"] != float64(0) || got["supports_tcp"] != false {
 		t.Fatalf("unexpected zero-value encoding: %s", data)

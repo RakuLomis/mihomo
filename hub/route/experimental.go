@@ -30,6 +30,7 @@ func experimentalRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/tracing", getTracing)
 	r.Get("/tracing/capabilities", getTracingCapabilities)
+	r.Post("/tracing/barrier", postTracingBarrier)
 	r.Patch("/tracing", patchTracing)
 	return r
 }
@@ -40,6 +41,16 @@ func getTracing(w http.ResponseWriter, r *http.Request) {
 
 func getTracingCapabilities(w http.ResponseWriter, r *http.Request) {
 	render.JSON(w, r, tracer.CurrentCapabilities())
+}
+
+func postTracingBarrier(w http.ResponseWriter, r *http.Request) {
+	barrier, err := tracer.Barrier()
+	if err != nil {
+		render.Status(r, http.StatusConflict)
+		render.JSON(w, r, newError(err.Error()))
+		return
+	}
+	render.JSON(w, r, barrier)
 }
 
 func patchTracing(w http.ResponseWriter, r *http.Request) {

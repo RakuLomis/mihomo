@@ -9,6 +9,7 @@
     "session_id",
     "shared_outer_flow",
     "egress_outcome",
-    "session_sink_isolation"
+    "session_sink_isolation",
+    "trace_barrier"
   ]
 }

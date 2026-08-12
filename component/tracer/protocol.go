@@ -18,6 +18,7 @@ const (
 	CapabilitySharedOuterFlow CapabilityName = "shared_outer_flow"
 	CapabilityEgressOutcome   CapabilityName = "egress_outcome"
 	CapabilitySessionSink     CapabilityName = "session_sink_isolation"
+	CapabilityTraceBarrier    CapabilityName = "trace_barrier"
 )
 
 // Capabilities is the stable response body for tracing feature discovery.
@@ -34,6 +35,7 @@ type Capabilities struct {
 	SupportsSharedOuterFlow bool `json:"supports_shared_outer_flow"`
 	SupportsEgressOutcome   bool `json:"supports_egress_outcome"`
 	SupportsSessionSink     bool `json:"supports_session_sink_isolation"`
+	SupportsTraceBarrier    bool `json:"supports_trace_barrier"`
 }
 
 func CurrentCapabilities() Capabilities {
@@ -48,5 +50,6 @@ func CurrentCapabilities() Capabilities {
 		SupportsSharedOuterFlow: true,
 		SupportsEgressOutcome:   true,
 		SupportsSessionSink:     true,
+		SupportsTraceBarrier:    true,
 	}
 }

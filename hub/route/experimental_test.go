@@ -1,9 +1,11 @@
 package route
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -131,6 +133,53 @@ func TestTracingCapabilitiesRejectsUnsupportedMethods(t *testing.T) {
 				t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 			}
 		})
+	}
+}
+
+func TestPostTracingBarrierReturnsDurableBoundary(t *testing.T) {
+	resetTracing(t)
+	output := filepath.Join(t.TempDir(), "trace.jsonl")
+	enabled := true
+	sessionID := "capture-one"
+	if err := tracer.Configure(tracer.ConfigPatch{
+		Enabled: &enabled, Output: &output, SessionID: &sessionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tracing/barrier", nil)
+	resp := httptest.NewRecorder()
+	experimentalRouter().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var got tracer.BarrierResult
+	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.SessionID != sessionID || got.EventSeq == 0 || got.Output != output || got.Ts == "" {
+		t.Fatalf("unexpected barrier: %+v", got)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marker map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &marker); err != nil {
+		t.Fatal(err)
+	}
+	if marker["type"] != "trace_barrier" || marker["event_seq"] != float64(got.EventSeq) || marker["session_id"] != sessionID {
+		t.Fatalf("marker=%v barrier=%+v", marker, got)
+	}
+}
+
+func TestPostTracingBarrierRejectsDisabledTracing(t *testing.T) {
+	resetTracing(t)
+	req := httptest.NewRequest(http.MethodPost, "/tracing/barrier", nil)
+	resp := httptest.NewRecorder()
+	experimentalRouter().ServeHTTP(resp, req)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
 

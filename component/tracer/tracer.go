@@ -26,6 +26,7 @@ const (
 	UDPOut       EventType = "udp_out"
 	UDPIn        EventType = "udp_in"
 	UDPClose     EventType = "udp_close"
+	TraceBarrier EventType = "trace_barrier"
 )
 
 const (
@@ -99,6 +100,15 @@ type Status struct {
 	LastError      string `json:"last_error,omitempty"`
 	WriteErrors    uint64 `json:"write_errors"`
 	ActiveSessions int64  `json:"active_sessions"`
+}
+
+// BarrierResult identifies a durable point in the current trace sink. Events
+// written after EventSeq must not be included in the capture snapshot.
+type BarrierResult struct {
+	SessionID string `json:"session_id"`
+	EventSeq  uint64 `json:"event_seq"`
+	Ts        string `json:"ts"`
+	Output    string `json:"output"`
 }
 
 type Tracer struct {
@@ -201,6 +211,29 @@ func GetStatus() Status {
 	return globalTracer.status()
 }
 
+// Barrier writes and flushes a marker to the currently configured trace sink.
+func Barrier() (BarrierResult, error) {
+	return globalTracer.barrier()
+}
+
+func (t *Tracer) barrier() (BarrierResult, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if !t.enabled.Load() {
+		return BarrierResult{}, fmt.Errorf("tracer: tracing is disabled")
+	}
+	sink := t.sink
+	if sink == nil || sink.writer == nil || sink.failed {
+		return BarrierResult{}, fmt.Errorf("tracer: output unavailable: %s", t.lastError)
+	}
+	e := event{Type: TraceBarrier}
+	if err := t.writeEventLocked(sink, &e); err != nil {
+		return BarrierResult{}, err
+	}
+	return BarrierResult{SessionID: e.SessionID, EventSeq: e.EventSeq, Ts: e.Ts, Output: sink.output}, nil
+}
+
 func (t *Tracer) status() Status {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -254,25 +287,25 @@ func (t *Tracer) writeTo(sink *traceSink, e event) {
 	if sink == nil {
 		return
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_ = t.writeEventLocked(sink, &e)
+}
+
+// writeEventLocked serializes sequence assignment, writing, and flushing so a
+// barrier is an exact ordering boundary even when connection events race it.
+func (t *Tracer) writeEventLocked(sink *traceSink, e *event) error {
+	if sink.writer == nil || sink.failed {
+		return fmt.Errorf("tracer: output unavailable")
+	}
 	e.SchemaVersion = EventSchemaVersion
 	e.EventSeq = t.eventSeq.Add(1)
 	e.Ts = time.Now().UTC().Format(time.RFC3339Nano)
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	e.SessionID = sink.sessionID
-	b, err := json.Marshal(e)
+	b, err := json.Marshal(*e)
 	if err != nil {
-		sink.failed = true
-		t.lastError = err.Error()
-		t.writeErrors.Add(1)
-		if sink == t.sink {
-			t.enabled.Store(false)
-		}
-		return
-	}
-	if sink.writer == nil || sink.failed {
-		return
+		t.failSinkLocked(sink, err)
+		return err
 	}
 	if _, err = sink.writer.Write(b); err == nil {
 		err = sink.writer.WriteByte('\n')
@@ -281,12 +314,18 @@ func (t *Tracer) writeTo(sink *traceSink, e event) {
 		err = sink.writer.Flush()
 	}
 	if err != nil {
-		sink.failed = true
-		t.lastError = err.Error()
-		t.writeErrors.Add(1)
-		if sink == t.sink {
-			t.enabled.Store(false)
-		}
+		t.failSinkLocked(sink, err)
+		return err
+	}
+	return nil
+}
+
+func (t *Tracer) failSinkLocked(sink *traceSink, err error) {
+	sink.failed = true
+	t.lastError = err.Error()
+	t.writeErrors.Add(1)
+	if sink == t.sink {
+		t.enabled.Store(false)
 	}
 }
 
