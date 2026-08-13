@@ -2,7 +2,9 @@ package tracer
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/metacubex/mihomo/common/traffictrace"
@@ -84,6 +87,7 @@ type event struct {
 	DurationMs     int64                   `json:"duration_ms,omitempty"`
 	Status         string                  `json:"status,omitempty"`
 	Stage          string                  `json:"stage,omitempty"`
+	ErrorClass     string                  `json:"error_class,omitempty"`
 	Error          string                  `json:"error,omitempty"`
 }
 
@@ -497,7 +501,8 @@ func (s *TCPSession) Close(bytesUp, bytesDown int64, status, stage string, cause
 			Type: TCPClose, Network: "tcp", ConnID: s.id,
 			BytesUp: bytesUp, BytesDown: bytesDown,
 			DurationMs: time.Since(s.start).Milliseconds(),
-			Status:     status, Stage: stage, Error: errorString(cause),
+			Status:     status, Stage: stage, ErrorClass: classifyTerminalError(status, stage, cause),
+			Error: errorString(cause),
 		})
 		s.tracer.activeSessions.Add(-1)
 		s.tracer.releaseSink(s.sink)
@@ -626,7 +631,8 @@ func (s *UDPSession) Close(bytesUp, bytesDown int64, status, stage string, cause
 			Type: UDPClose, Network: "udp", ConnKey: s.key,
 			BytesUp: bytesUp, BytesDown: bytesDown,
 			DurationMs: time.Since(s.start).Milliseconds(),
-			Status:     status, Stage: stage, Error: errorString(cause),
+			Status:     status, Stage: stage, ErrorClass: classifyTerminalError(status, stage, cause),
+			Error: errorString(cause),
 		})
 		s.tracer.activeSessions.Add(-1)
 		s.tracer.releaseSink(s.sink)
@@ -675,6 +681,33 @@ func terminalForEgress(outcome, status, stage string) (string, string) {
 		return StatusRejected, "reject"
 	}
 	return status, stage
+}
+
+func classifyTerminalError(status, stage string, cause error) string {
+	var networkError net.Error
+	isNetworkTimeout := errors.As(cause, &networkError) && networkError.Timeout()
+	switch {
+	case status == StatusRejected || stage == "reject":
+		return "policy_rejected"
+	case status == StatusCanceled || errors.Is(cause, context.Canceled):
+		return "canceled"
+	case status == StatusResolveError:
+		return "dns_resolution"
+	case errors.Is(cause, context.DeadlineExceeded), isNetworkTimeout:
+		return "timeout"
+	case errors.Is(cause, syscall.ECONNREFUSED):
+		return "connection_refused"
+	case errors.Is(cause, syscall.ENETUNREACH), errors.Is(cause, syscall.EHOSTUNREACH):
+		return "network_unreachable"
+	case status == StatusDialError || stage == "dial":
+		return "dial_failure"
+	case stage == "rule":
+		return "rule_failure"
+	case cause != nil:
+		return "transport_failure"
+	default:
+		return ""
+	}
 }
 
 func normalizedEndpointMetadata(endpoint EndpointInfo, flow *traffictrace.FlowTuple) (string, string) {

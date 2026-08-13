@@ -2,12 +2,14 @@ package tracer
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -154,8 +156,49 @@ func TestTCPDialFailureClosesLifecycle(t *testing.T) {
 	if len(events) != 2 || events[1].Type != TCPClose {
 		t.Fatalf("unexpected failure lifecycle: %+v", events)
 	}
-	if events[1].Status != StatusDialError || events[1].Stage != "dial" || events[1].Error != "connection refused" {
+	if events[1].Status != StatusDialError || events[1].Stage != "dial" || events[1].Error != "connection refused" || events[1].ErrorClass != "dial_failure" {
 		t.Fatalf("unexpected failure close event: %+v", events[1])
+	}
+}
+
+func TestEgressClassificationCoversCoreAdapterTypes(t *testing.T) {
+	tests := []struct{ proxyType, want string }{
+		{"DIRECT", EgressDirect},
+		{"REJECT", EgressRejected},
+		{"REJECT-DROP", EgressRejectedDrop},
+		{"DNS", EgressInternalDNS},
+		{"PASS", EgressPass},
+		{"Compatible", EgressCompatible},
+		{"", EgressUnknown},
+		{"Shadowsocks", EgressProxy},
+	}
+	for _, tt := range tests {
+		if got := classifyEgress(tt.proxyType); got != tt.want {
+			t.Fatalf("classifyEgress(%q) = %q, want %q", tt.proxyType, got, tt.want)
+		}
+	}
+}
+
+func TestTerminalErrorClassUsesStableErrorEvidence(t *testing.T) {
+	tests := []struct {
+		name, status, stage, want string
+		err                       error
+	}{
+		{"dns status", StatusResolveError, "resolve", "dns_resolution", errors.New("arbitrary text")},
+		{"deadline", StatusDialError, "dial", "timeout", context.DeadlineExceeded},
+		{"net timeout", StatusDialError, "dial", "timeout", &net.DNSError{IsTimeout: true}},
+		{"refused", StatusDialError, "dial", "connection_refused", syscall.ECONNREFUSED},
+		{"unreachable", StatusDialError, "dial", "network_unreachable", syscall.ENETUNREACH},
+		{"canceled", StatusCanceled, "dial", "canceled", context.Canceled},
+		{"generic dial", StatusDialError, "dial", "dial_failure", errors.New("opaque")},
+		{"reject", StatusRejected, "reject", "policy_rejected", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyTerminalError(tt.status, tt.stage, tt.err); got != tt.want {
+				t.Fatalf("classifyTerminalError() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
