@@ -30,6 +30,16 @@ type FlowTuple struct {
 type OuterFlowObservation struct {
 	OuterConnID string
 	Flow        FlowTuple
+	Relation    string
+	Generation  uint64
+	Protocol    string
+	Paths       []FlowTuple
+}
+
+func (o OuterFlowObservation) Clone() OuterFlowObservation {
+	clone := o
+	clone.Paths = append([]FlowTuple(nil), o.Paths...)
+	return clone
 }
 
 func NewOuterConnID() string {

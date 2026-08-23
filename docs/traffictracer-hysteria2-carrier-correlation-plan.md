@@ -2,8 +2,21 @@
 
 ## Status
 
-This document records the implementation plan only. No implementation described
-below is complete until its corresponding task has been implemented and verified.
+Implemented across the Mihomo TrafficTracer, TrafficTracer Complete, and Clash
+Verge feat/traffic-tracer branches on 2026-08-23.
+
+The implementation provides:
+
+- an always-on, concurrency-safe Hysteria2 carrier registry;
+- stable carrier IDs, generations, path updates, and close events;
+- a complete carrier snapshot on every logical stream or packet-association bind;
+- strict or observational capture-group proxy-protocol invariants;
+- protocol-neutral analyzer states and shared-carrier PCAP artifacts;
+- carrier, inbound, and proxy-protocol coverage in canonical reports and the UI.
+
+The implementation deliberately does not claim that encrypted QUIC carrier bytes
+can be divided uniquely among logical streams. A shared carrier is captured once
+and referenced by every bound logical connection.
 
 The plan is based on the capture groups:
 
@@ -284,6 +297,18 @@ Acceptance criteria:
 - VLESS post-proxy coverage remains at the established baseline;
 - logical flows reference the real shared UDP carrier and its actual paths;
 - no association is invented without core or socket evidence.
+
+## Operational Semantics
+
+The core registry is independent of an active trace sink. Consequently, a carrier
+opened by an earlier page can still be bound during a later Session. Every binding
+contains a self-contained snapshot so rotating the trace file cannot erase the
+evidence needed by the analyzer.
+
+Port hopping appends a physical path while retaining the carrier ID. A successful
+replacement increments the generation; a failed connection attempt never replaces
+the active carrier. Lifecycle callbacks run outside the registry lock. Older
+consumers may ignore every new additive field and event.
 
 ## Recommended Implementation Order
 

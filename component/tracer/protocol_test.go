@@ -49,6 +49,10 @@ func TestProtocolConstantsMatchFixture(t *testing.T) {
 		CapabilityEgressOutcome,
 		CapabilitySessionSink,
 		CapabilityTraceBarrier,
+		CapabilityCarrierLifecycle,
+		CapabilityCarrierBinding,
+		CapabilityMultiPathCarrier,
+		CapabilityProtocolSnapshot,
 	}
 	if !reflect.DeepEqual(fixture.Capabilities, wantCapabilities) {
 		t.Fatalf("fixture capabilities = %q, want %q", fixture.Capabilities, wantCapabilities)
@@ -67,9 +71,13 @@ func TestCapabilitiesJSONKeysAndCurrentValues(t *testing.T) {
 	wantKeys := []string{
 		"api_version",
 		"event_schema_version",
+		"supports_carrier_lifecycle",
 		"supports_egress_outcome",
+		"supports_logical_carrier_binding",
+		"supports_multi_path_carrier",
 		"supports_normalized_flow",
 		"supports_outer_conn_id",
+		"supports_protocol_snapshot",
 		"supports_session_id",
 		"supports_session_sink_isolation",
 		"supports_shared_outer_flow",
@@ -104,8 +112,8 @@ func TestCapabilitiesZeroValueIsExplicit(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 11 {
-		t.Fatalf("zero-value capabilities encoded %d fields, want 11: %s", len(got), data)
+	if len(got) != 15 {
+		t.Fatalf("zero-value capabilities encoded %d fields, want 15: %s", len(got), data)
 	}
 	if got["api_version"] != float64(0) || got["supports_tcp"] != false {
 		t.Fatalf("unexpected zero-value encoding: %s", data)

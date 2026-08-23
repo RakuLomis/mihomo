@@ -21,15 +21,19 @@ import (
 type EventType string
 
 const (
-	TCPConnect   EventType = "tcp_connect"
-	TCPProxyDial EventType = "tcp_proxy_dial"
-	TCPClose     EventType = "tcp_close"
-	UDPConnect   EventType = "udp_connect"
-	UDPProxyDial EventType = "udp_proxy_dial"
-	UDPOut       EventType = "udp_out"
-	UDPIn        EventType = "udp_in"
-	UDPClose     EventType = "udp_close"
-	TraceBarrier EventType = "trace_barrier"
+	TCPConnect         EventType = "tcp_connect"
+	TCPProxyDial       EventType = "tcp_proxy_dial"
+	TCPClose           EventType = "tcp_close"
+	UDPConnect         EventType = "udp_connect"
+	UDPProxyDial       EventType = "udp_proxy_dial"
+	UDPOut             EventType = "udp_out"
+	UDPIn              EventType = "udp_in"
+	UDPClose           EventType = "udp_close"
+	TraceBarrier       EventType = "trace_barrier"
+	CarrierOpen        EventType = "carrier_open"
+	CarrierPathUpdate  EventType = "carrier_path_update"
+	LogicalCarrierBind EventType = "logical_carrier_bind"
+	CarrierClose       EventType = "carrier_close"
 )
 
 const (
@@ -52,43 +56,49 @@ const (
 )
 
 type event struct {
-	SchemaVersion  int                     `json:"schema_version"`
-	SessionID      string                  `json:"session_id,omitempty"`
-	Ts             string                  `json:"ts"`
-	EventSeq       uint64                  `json:"event_seq"`
-	Type           EventType               `json:"type"`
-	Network        string                  `json:"network"`
-	PreFlow        *traffictrace.FlowTuple `json:"pre_flow,omitempty"`
-	PostFlow       *traffictrace.FlowTuple `json:"post_flow,omitempty"`
-	OuterConnID    string                  `json:"outer_conn_id,omitempty"`
-	ConnID         string                  `json:"conn_id,omitempty"`
-	ConnKey        string                  `json:"conn_key,omitempty"`
-	Seq            uint64                  `json:"seq,omitempty"`
-	Src            string                  `json:"src,omitempty"`
-	Dst            string                  `json:"dst,omitempty"`
-	Host           string                  `json:"host,omitempty"`
-	Process        string                  `json:"process,omitempty"`
-	ProcessPath    string                  `json:"process_path,omitempty"`
-	InName         string                  `json:"in_name,omitempty"`
-	Proxy          string                  `json:"proxy,omitempty"`
-	ProxyType      string                  `json:"proxy_type,omitempty"`
-	LeafProxy      string                  `json:"leaf_proxy,omitempty"`
-	LeafProxyType  string                  `json:"leaf_proxy_type,omitempty"`
-	EgressOutcome  string                  `json:"egress_outcome,omitempty"`
-	ProxyAddr      string                  `json:"proxy_addr,omitempty"`
-	OutSrc         string                  `json:"out_src,omitempty"`
-	OutDst         string                  `json:"out_dst,omitempty"`
-	EndpointScope  string                  `json:"endpoint_scope,omitempty"`
-	EndpointSource string                  `json:"endpoint_source,omitempty"`
-	Len            int                     `json:"len,omitempty"`
-	From           string                  `json:"from,omitempty"`
-	BytesUp        int64                   `json:"bytes_up,omitempty"`
-	BytesDown      int64                   `json:"bytes_down,omitempty"`
-	DurationMs     int64                   `json:"duration_ms,omitempty"`
-	Status         string                  `json:"status,omitempty"`
-	Stage          string                  `json:"stage,omitempty"`
-	ErrorClass     string                  `json:"error_class,omitempty"`
-	Error          string                  `json:"error,omitempty"`
+	SchemaVersion     int                      `json:"schema_version"`
+	SessionID         string                   `json:"session_id,omitempty"`
+	Ts                string                   `json:"ts"`
+	EventSeq          uint64                   `json:"event_seq"`
+	Type              EventType                `json:"type"`
+	Network           string                   `json:"network"`
+	PreFlow           *traffictrace.FlowTuple  `json:"pre_flow,omitempty"`
+	PostFlow          *traffictrace.FlowTuple  `json:"post_flow,omitempty"`
+	OuterConnID       string                   `json:"outer_conn_id,omitempty"`
+	CarrierID         string                   `json:"carrier_id,omitempty"`
+	CarrierRelation   string                   `json:"carrier_relation,omitempty"`
+	CarrierGeneration uint64                   `json:"carrier_generation,omitempty"`
+	CarrierProtocol   string                   `json:"carrier_protocol,omitempty"`
+	CarrierPaths      []traffictrace.FlowTuple `json:"carrier_paths,omitempty"`
+	LogicalConnID     string                   `json:"logical_conn_id,omitempty"`
+	ConnID            string                   `json:"conn_id,omitempty"`
+	ConnKey           string                   `json:"conn_key,omitempty"`
+	Seq               uint64                   `json:"seq,omitempty"`
+	Src               string                   `json:"src,omitempty"`
+	Dst               string                   `json:"dst,omitempty"`
+	Host              string                   `json:"host,omitempty"`
+	Process           string                   `json:"process,omitempty"`
+	ProcessPath       string                   `json:"process_path,omitempty"`
+	InName            string                   `json:"in_name,omitempty"`
+	Proxy             string                   `json:"proxy,omitempty"`
+	ProxyType         string                   `json:"proxy_type,omitempty"`
+	LeafProxy         string                   `json:"leaf_proxy,omitempty"`
+	LeafProxyType     string                   `json:"leaf_proxy_type,omitempty"`
+	EgressOutcome     string                   `json:"egress_outcome,omitempty"`
+	ProxyAddr         string                   `json:"proxy_addr,omitempty"`
+	OutSrc            string                   `json:"out_src,omitempty"`
+	OutDst            string                   `json:"out_dst,omitempty"`
+	EndpointScope     string                   `json:"endpoint_scope,omitempty"`
+	EndpointSource    string                   `json:"endpoint_source,omitempty"`
+	Len               int                      `json:"len,omitempty"`
+	From              string                   `json:"from,omitempty"`
+	BytesUp           int64                    `json:"bytes_up,omitempty"`
+	BytesDown         int64                    `json:"bytes_down,omitempty"`
+	DurationMs        int64                    `json:"duration_ms,omitempty"`
+	Status            string                   `json:"status,omitempty"`
+	Stage             string                   `json:"stage,omitempty"`
+	ErrorClass        string                   `json:"error_class,omitempty"`
+	Error             string                   `json:"error,omitempty"`
 }
 
 type ConfigPatch struct {
@@ -138,6 +148,40 @@ type traceSink struct {
 }
 
 var globalTracer = newTracer(os.Stdout)
+
+func init() {
+	traffictrace.SetCarrierLifecycleObserver(globalTracer.writeCarrierLifecycle)
+}
+
+func (t *Tracer) writeCarrierLifecycle(lifecycle traffictrace.CarrierLifecycleObservation) {
+	var eventType EventType
+	switch lifecycle.Type {
+	case traffictrace.CarrierLifecycleOpen:
+		eventType = CarrierOpen
+	case traffictrace.CarrierLifecyclePathUpdate:
+		eventType = CarrierPathUpdate
+	case traffictrace.CarrierLifecycleClose:
+		eventType = CarrierClose
+	default:
+		return
+	}
+	observation := lifecycle.Observation
+	sink := t.acquireSink()
+	if sink == nil {
+		return
+	}
+	defer t.releaseSink(sink)
+	t.writeTo(sink, event{
+		Type: eventType, Network: observation.Flow.Network,
+		PostFlow:          flowPointer(observation.Flow),
+		OuterConnID:       observation.OuterConnID,
+		CarrierID:         observation.OuterConnID,
+		CarrierRelation:   observation.Relation,
+		CarrierGeneration: observation.Generation,
+		CarrierProtocol:   observation.Protocol,
+		CarrierPaths:      append([]traffictrace.FlowTuple(nil), observation.Paths...),
+	})
+}
 
 func newTracer(stdout io.Writer) *Tracer {
 	return &Tracer{
@@ -485,7 +529,22 @@ func (s *TCPSession) ProxyDialWithLeaf(proxy, proxyType, leafProxy, leafProxyTyp
 		OutSrc: outSrc, OutDst: outDst,
 		EndpointScope: endpointScope, EndpointSource: endpointSource,
 		PostFlow: postFlow, OuterConnID: outerConnID,
+		CarrierID: outerConnID, CarrierRelation: outer.Relation,
+		CarrierGeneration: outer.Generation, CarrierProtocol: outer.Protocol,
+		CarrierPaths: append([]traffictrace.FlowTuple(nil), outer.Paths...),
 	})
+	if outerConnID != "" {
+		s.tracer.writeTo(s.sink, event{
+			Type: LogicalCarrierBind, Network: "tcp",
+			ConnID: s.id, LogicalConnID: s.id,
+			Proxy: proxy, ProxyType: proxyType,
+			LeafProxy: leafProxy, LeafProxyType: leafProxyType,
+			PostFlow: postFlow, OuterConnID: outerConnID,
+			CarrierID: outerConnID, CarrierRelation: outer.Relation,
+			CarrierGeneration: outer.Generation, CarrierProtocol: outer.Protocol,
+			CarrierPaths: append([]traffictrace.FlowTuple(nil), outer.Paths...),
+		})
+	}
 }
 
 func (s *TCPSession) Close(bytesUp, bytesDown int64, status, stage string, cause error) {
@@ -588,7 +647,22 @@ func (s *UDPSession) ProxyDialWithLeaf(proxy, proxyType, leafProxy, leafProxyTyp
 		OutSrc: outSrc, OutDst: outDst,
 		EndpointScope: endpointScope, EndpointSource: endpointSource,
 		PostFlow: postFlow, OuterConnID: outerConnID,
+		CarrierID: outerConnID, CarrierRelation: outer.Relation,
+		CarrierGeneration: outer.Generation, CarrierProtocol: outer.Protocol,
+		CarrierPaths: append([]traffictrace.FlowTuple(nil), outer.Paths...),
 	})
+	if outerConnID != "" {
+		s.tracer.writeTo(s.sink, event{
+			Type: LogicalCarrierBind, Network: "udp",
+			ConnKey: s.key, LogicalConnID: s.key,
+			Proxy: proxy, ProxyType: proxyType,
+			LeafProxy: leafProxy, LeafProxyType: leafProxyType,
+			PostFlow: postFlow, OuterConnID: outerConnID,
+			CarrierID: outerConnID, CarrierRelation: outer.Relation,
+			CarrierGeneration: outer.Generation, CarrierProtocol: outer.Protocol,
+			CarrierPaths: append([]traffictrace.FlowTuple(nil), outer.Paths...),
+		})
+	}
 }
 
 func (s *UDPSession) PacketOut(src, dst string, length int) {

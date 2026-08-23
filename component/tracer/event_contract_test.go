@@ -7,19 +7,25 @@ import (
 	"go/parser"
 	"go/token"
 	"strconv"
+
+	"github.com/metacubex/mihomo/common/traffictrace"
 	"testing"
 )
 
 var eventContractTypes = map[EventType]struct{}{
-	TCPConnect:   {},
-	TCPProxyDial: {},
-	TCPClose:     {},
-	UDPConnect:   {},
-	UDPProxyDial: {},
-	UDPOut:       {},
-	UDPIn:        {},
-	UDPClose:     {},
-	TraceBarrier: {},
+	TCPConnect:         {},
+	TCPProxyDial:       {},
+	TCPClose:           {},
+	UDPConnect:         {},
+	UDPProxyDial:       {},
+	UDPOut:             {},
+	UDPIn:              {},
+	CarrierOpen:        {},
+	CarrierPathUpdate:  {},
+	LogicalCarrierBind: {},
+	CarrierClose:       {},
+	UDPClose:           {},
+	TraceBarrier:       {},
 }
 
 func TestEveryEventTypeCarriesVersionedSessionEnvelope(t *testing.T) {
@@ -30,8 +36,22 @@ func TestEveryEventTypeCarriesVersionedSessionEnvelope(t *testing.T) {
 	if err := tr.configure(ConfigPatch{SessionID: &sessionID}); err != nil {
 		t.Fatal(err)
 	}
+	carrier := traffictrace.OuterFlowObservation{
+		OuterConnID: "carrier-contract",
+		Flow: traffictrace.NewFlowTupleFromStrings(
+			"udp", "192.0.2.10:30001", "198.51.100.20:443",
+			"dialer_socket", "physical", true,
+		),
+		Relation:   traffictrace.CarrierRelationCreated,
+		Generation: 1, Protocol: "hysteria2",
+	}
+	carrier.Paths = []traffictrace.FlowTuple{carrier.Flow}
+	tr.writeCarrierLifecycle(traffictrace.CarrierLifecycleObservation{Type: traffictrace.CarrierLifecycleOpen, Observation: carrier})
+	tr.writeCarrierLifecycle(traffictrace.CarrierLifecycleObservation{Type: traffictrace.CarrierLifecyclePathUpdate, Observation: carrier})
+	tr.writeCarrierLifecycle(traffictrace.CarrierLifecycleObservation{Type: traffictrace.CarrierLifecycleClose, Observation: carrier})
 
 	tcp := tr.beginTCP("tcp-contract", "127.0.0.1:12000", "1.1.1.1:443", "example.com", "curl", "/usr/bin/curl", "tun")
+	tcp.ObserveOuterFlow(carrier)
 	tcp.ProxyDial("proxy", "ss", "proxy.example:443", EndpointInfo{
 		Local: "192.0.2.10:30000", Remote: "198.51.100.20:443", Scope: "physical", Source: "socket",
 	})

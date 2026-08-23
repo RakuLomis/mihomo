@@ -24,7 +24,7 @@ func TestTCPEventsLinkNormalizedPreAndPostFlows(t *testing.T) {
 	session.ProxyDial("proxy", "ss", "proxy.example:8443", EndpointInfo{Local: "outer-1", Remote: "logical.example:8443", Scope: "logical"})
 	session.Close(0, 0, StatusClosed, "", nil)
 	events := decodeEvents(t, output.Bytes())
-	if len(events) != 3 || events[0].PreFlow == nil || events[0].PreFlow.Key != preFlow.Key {
+	if len(events) != 4 || events[0].PreFlow == nil || events[0].PreFlow.Key != preFlow.Key {
 		t.Fatalf("tcp_connect lost pre-flow: %+v", events)
 	}
 	if events[1].PostFlow == nil || events[1].PostFlow.Key != postFlow.Key || events[1].PostFlow.Scope != "physical" || events[1].OuterConnID != "outer-1" {
@@ -49,13 +49,13 @@ func TestUDPOutCarriesPerPacketPreFlow(t *testing.T) {
 	session.PacketOutWithFlow(second, "src", "dst-2", 20)
 	session.Close(30, 0, StatusClosed, "", nil)
 	events := decodeEvents(t, output.Bytes())
-	if len(events) != 5 || events[1].PostFlow == nil || !events[1].PostFlow.Shared || events[1].OuterConnID != "outer-udp" {
+	if len(events) != 6 || events[1].PostFlow == nil || !events[1].PostFlow.Shared || events[1].OuterConnID != "outer-udp" {
 		t.Fatalf("unexpected udp proxy event: %+v", events)
 	}
 	if events[1].OutSrc != "203.0.113.10:3000" || events[1].OutDst != "203.0.113.20:443" {
 		t.Fatalf("udp legacy endpoints diverged from post-flow: %+v", events[1])
 	}
-	if events[2].PreFlow == nil || events[2].PreFlow.Key != first.Key || events[3].PreFlow == nil || events[3].PreFlow.Key != second.Key || events[2].ConnKey != events[3].ConnKey {
+	if events[3].PreFlow == nil || events[3].PreFlow.Key != first.Key || events[4].PreFlow == nil || events[4].PreFlow.Key != second.Key || events[3].ConnKey != events[4].ConnKey {
 		t.Fatalf("udp packet flows were not preserved: %+v", events)
 	}
 }

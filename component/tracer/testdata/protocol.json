@@ -10,6 +10,10 @@
     "shared_outer_flow",
     "egress_outcome",
     "session_sink_isolation",
-    "trace_barrier"
+    "trace_barrier",
+    "carrier_lifecycle",
+    "logical_carrier_binding",
+    "multi_path_carrier",
+    "protocol_snapshot"
   ]
 }

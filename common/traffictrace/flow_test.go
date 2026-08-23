@@ -52,4 +52,57 @@ func TestObserveOuterFlowFromContext(t *testing.T) {
 	if got.OuterConnID == "" || !got.Flow.Complete || got.Flow.Scope != "physical" || got.Flow.Source != "dialer_socket" {
 		t.Fatalf("unexpected observation: %+v", got)
 	}
+	if got.Relation != CarrierRelationCreated || got.Generation != 1 {
+		t.Fatalf("unexpected carrier metadata: %+v", got)
+	}
+}
+
+func TestNotifyOuterFlowPreservesIdentityAndClonesPaths(t *testing.T) {
+	observer := &recordingObserver{}
+	ctx := WithObserver(context.Background(), observer)
+	path := NewFlowTuple("udp", netip.MustParseAddrPort("192.0.2.1:2000"), netip.MustParseAddrPort("198.51.100.1:443"), "", "dialer_socket", "physical", true)
+	observation := OuterFlowObservation{
+		OuterConnID: "carrier-1", Flow: path, Relation: CarrierRelationReused,
+		Generation: 2, Protocol: "hysteria2", Paths: []FlowTuple{path},
+	}
+	NotifyOuterFlow(ctx, observation)
+	observation.Paths[0].DstPort = 8443
+	got := observer.observation
+	if got.OuterConnID != "carrier-1" || got.Relation != CarrierRelationReused || got.Generation != 2 {
+		t.Fatalf("unexpected reused observation: %+v", got)
+	}
+	if len(got.Paths) != 1 || got.Paths[0].DstPort != 443 {
+		t.Fatalf("observer must receive an isolated path snapshot: %+v", got.Paths)
+	}
+}
+
+func TestNotifyCarrierLifecycleClonesPathSnapshot(t *testing.T) {
+	path := NewFlowTuple(
+		"udp",
+		netip.MustParseAddrPort("192.0.2.1:2000"),
+		netip.MustParseAddrPort("198.51.100.1:443"),
+		"", "dialer_socket", "physical", true,
+	)
+	observation := OuterFlowObservation{
+		OuterConnID: "carrier-1", Flow: path,
+		Relation: CarrierRelationCreated, Generation: 1,
+		Protocol: "hysteria2", Paths: []FlowTuple{path},
+	}
+	var got CarrierLifecycleObservation
+	SetCarrierLifecycleObserver(func(event CarrierLifecycleObservation) {
+		got = event
+	})
+	t.Cleanup(func() { SetCarrierLifecycleObserver(nil) })
+
+	NotifyCarrierLifecycle(CarrierLifecycleObservation{
+		Type: CarrierLifecycleOpen, Observation: observation,
+	})
+	observation.Paths[0].DstPort = 8443
+
+	if got.Type != CarrierLifecycleOpen || got.Observation.OuterConnID != "carrier-1" {
+		t.Fatalf("unexpected lifecycle event: %+v", got)
+	}
+	if got.Observation.Paths[0].DstPort != 443 {
+		t.Fatalf("lifecycle observer must receive an isolated snapshot: %+v", got)
+	}
 }
