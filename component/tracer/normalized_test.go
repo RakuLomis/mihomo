@@ -60,6 +60,30 @@ func TestUDPOutCarriesPerPacketPreFlow(t *testing.T) {
 	}
 }
 
+func TestCarrierMetadataFallsBackOnlyToBindingEvidence(t *testing.T) {
+	var output bytes.Buffer
+	tr := newTracer(&output)
+	tr.enabled.Store(true)
+	post := testFlow("tcp", "192.0.2.10:3000", "198.51.100.20:443")
+	post.Source, post.Scope, post.Shared = "dialer_socket", "physical", true
+	session := tr.beginTCP("tcp-carrier-fallback", "src", "dst", "", "", "", "")
+	session.ObserveOuterFlow(traffictrace.OuterFlowObservation{
+		OuterConnID: "carrier-fallback", Flow: post,
+		Relation: traffictrace.CarrierRelationCreated, Generation: 1,
+	})
+	session.ProxyDialWithLeaf("group", "Selector", "hy2", "Hysteria2", "proxy:443", EndpointInfo{})
+	session.Close(0, 0, StatusClosed, "", nil)
+
+	events := decodeEvents(t, output.Bytes())
+	dial := events[1]
+	if dial.CarrierProtocol != "hysteria2" || dial.CarrierProtocolSource != "leaf_proxy_type" {
+		t.Fatalf("carrier protocol fallback missing: %+v", dial)
+	}
+	if len(dial.CarrierPaths) != 1 || dial.CarrierPaths[0].Key != post.Key || dial.CarrierPathsSource != "post_flow" {
+		t.Fatalf("carrier path fallback missing: %+v", dial)
+	}
+}
+
 func TestRejectLeafHasOutcomeWithoutInvalidPostFlow(t *testing.T) {
 	var output bytes.Buffer
 	tr := newTracer(&output)
