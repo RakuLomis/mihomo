@@ -203,10 +203,26 @@ runs the full environment diagnostic before launching the supervisor.
 
 ### STAB-007: Bounded application recovery
 
+Status: completed on 2026-09-02.
+
 Allow one opt-in retry for explicitly classified transient outcomes such as a
 blocking interstitial, player-not-created, or media-not-advancing result. Use a
 fresh managed Chrome process and new Session attempt, preserve the failed
 attempt, and never loop indefinitely.
+
+The shipped policy is disabled by default and permits exactly one automatic
+retry per playback target. It consumes only persisted analysis
+scenario-outcome reasons from the Worker's fixed allowlist; it never parses
+exception text or retries capture, analysis, protocol, degraded-positive, or
+unknown failures. Job schema v3 freezes the policy. Batch manifest v2 preserves
+all manual and automatic attempts while keeping the effective Session pointer
+compatible, and schema-v1 manifests migrate in memory.
+
+Clash Verge exposes the opt-in policy for YAML Capture Groups and Pipelines,
+routes a selected single target through Batch execution when needed, and links
+prior attempt analyses from persistent progress. Pipeline quality aggregates
+only each target's effective final Session, while the failed attempt remains
+auditable in the Batch manifest and Session catalog.
 
 ### STAB-008: Worker ownership watchdog
 
