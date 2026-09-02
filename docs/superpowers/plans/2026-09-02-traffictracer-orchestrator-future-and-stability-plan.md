@@ -165,11 +165,18 @@ names do not prove that the requested node remained selected.
 
 ### STAB-004: Startup and finalization handoff tests
 
+Status: completed on 2026-09-02.
+
 Treat initial Batch-manifest persistence, Job-manager registration, supervisor
 polling, and capture-lock ownership as one ordered handoff. Preserve the
 `starting_batch`, `reconciling_batch`, and `finalizing_batch` stages. Inject
 faults at each persistence boundary and prove that the UI cannot report a
 terminal error while capture is still active.
+
+Implemented with initial-manifest, Job-registration and thread-start fault
+injection; ambiguous Worker responses retain ownership and reconcile the
+pre-generated Job ID. Terminal Batch state cannot release ownership until the
+Worker Job is also terminal.
 
 ### STAB-005: Verified restoration
 
@@ -182,11 +189,17 @@ or successfully recovered.
 
 ### STAB-006: Lightweight whole-queue preflight
 
+Status: completed on 2026-09-02.
+
 Before the first Session, validate manually recorded candidate identity,
 Profile fingerprints, tuple uniqueness, target/config hashes, output path,
 interfaces, tools, TUN, tracing capabilities, and capture ownership. Inactive
 Profiles still receive just-in-time runtime validation; static YAML must not be
 presented as provider-readiness proof.
+
+The start gate now reuses Batch validation, validates the frozen config and
+candidate queue, checks active runtime evidence, acquires the pipeline lock and
+runs the full environment diagnostic before launching the supervisor.
 
 ### STAB-007: Bounded application recovery
 
@@ -197,17 +210,31 @@ attempt, and never loop indefinitely.
 
 ### STAB-008: Worker ownership watchdog
 
+Status: completed on 2026-09-02.
+
 Persist a lightweight heartbeat and owner record. On UI reload or application
 restart, reconcile Pipeline, Worker Job, Batch manifest, capture lock, and OS
 process evidence before declaring interruption. Never terminate an unrelated
 core or browser process.
 
+`pipeline-owner.json` records the supervisor PID, stage, Batch ID and bounded
+heartbeat. Recovery cross-checks it with the in-memory supervisor, capture
+lock, Worker active Job and OS process evidence; it never kills a process.
+
 ### STAB-009: Interrupt/cancel/resume state matrix
+
+Status: completed on 2026-09-02.
 
 Test requests during Profile activation, selection, drain, preflight, Batch
 startup, capture, analysis, finalization, and restore. Interrupt retains a
 cursor, cancel is terminal, completed targets never rerun, and the interrupted
 target creates a new Session attempt in the same Batch.
+
+Stop checks now cover every pre-Batch boundary and the active Batch loop with
+consistent cancel precedence. The Worker exposes `job.interrupt` so a Batch
+manifest visibility gap cannot downgrade resumable interruption to terminal
+cancellation. Existing resume tests prove completed children are retained and
+the interrupted child receives a new Session attempt.
 
 ### STAB-010: Trace-tail classification
 
