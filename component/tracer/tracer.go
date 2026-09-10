@@ -118,13 +118,16 @@ type Status struct {
 	ActiveSessions int64  `json:"active_sessions"`
 }
 
-// BarrierResult identifies a durable point in the current trace sink. Events
-// written after EventSeq must not be included in the capture snapshot.
+// BarrierResult identifies a flushed capture cutoff in the current trace sink.
+// Analysis may retain explicitly selected causal-tail evidence after EventSeq;
+// the cutoff does not seal a sink still owned by connection trackers.
 type BarrierResult struct {
-	SessionID string `json:"session_id"`
-	EventSeq  uint64 `json:"event_seq"`
-	Ts        string `json:"ts"`
-	Output    string `json:"output"`
+	SessionID      string `json:"session_id"`
+	EventSeq       uint64 `json:"event_seq"`
+	Ts             string `json:"ts"`
+	Output         string `json:"output"`
+	ByteSize       int64  `json:"byte_size,omitempty"`
+	JournalLocking bool   `json:"journal_locking,omitempty"`
 }
 
 type Tracer struct {
@@ -238,6 +241,10 @@ func (t *Tracer) openSink(output, sessionID string) (*traceSink, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tracer: open output file: %w", err)
 	}
+	if err := lockJournal(f); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("tracer: lock output file: %w", err)
+	}
 	return &traceSink{writer: bufio.NewWriter(f), file: f, output: output, sessionID: sessionID}, nil
 }
 
@@ -281,7 +288,16 @@ func (t *Tracer) barrier() (BarrierResult, error) {
 	if err := t.writeEventLocked(sink, &e); err != nil {
 		return BarrierResult{}, err
 	}
-	return BarrierResult{SessionID: e.SessionID, EventSeq: e.EventSeq, Ts: e.Ts, Output: sink.output}, nil
+	result := BarrierResult{SessionID: e.SessionID, EventSeq: e.EventSeq, Ts: e.Ts, Output: sink.output}
+	if sink.file != nil {
+		info, err := sink.file.Stat()
+		if err != nil {
+			return BarrierResult{}, err
+		}
+		result.ByteSize = info.Size()
+		result.JournalLocking = journalLockingSupported
+	}
+	return result, nil
 }
 
 func (t *Tracer) status() Status {
