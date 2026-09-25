@@ -53,6 +53,22 @@ func NotifyCarrierLifecycle(event CarrierLifecycleObservation) {
 }
 
 type observerContextKey struct{}
+type adapterReferenceContextKey struct{}
+
+func WithAdapterReference(ctx context.Context, reference AdapterReference) context.Context {
+	if ctx == nil || reference.AdapterInstanceID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, adapterReferenceContextKey{}, reference)
+}
+
+func AdapterReferenceFromContext(ctx context.Context) AdapterReference {
+	if ctx == nil {
+		return AdapterReference{}
+	}
+	reference, _ := ctx.Value(adapterReferenceContextKey{}).(AdapterReference)
+	return reference
+}
 
 func WithObserver(ctx context.Context, observer OuterFlowObserver) context.Context {
 	if observer == nil {
@@ -75,6 +91,7 @@ func ObserveOuterFlow(ctx context.Context, network string, src, dst net.Addr, so
 		Flow:        NewFlowTupleFromAddrs(network, src, dst, "", source, "physical", false),
 		Relation:    CarrierRelationCreated,
 		Generation:  1,
+		Adapter:     AdapterReferenceFromContext(ctx),
 	})
 }
 

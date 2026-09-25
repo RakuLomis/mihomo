@@ -20,7 +20,14 @@ func TestTCPEventsLinkNormalizedPreAndPostFlows(t *testing.T) {
 	postFlow := testFlow("tcp", "203.0.113.10:3000", "203.0.113.20:8443")
 	postFlow.Source, postFlow.Scope = "dialer_socket", "physical"
 	session := tr.beginTCPWithFlow("tcp-1", preFlow, "legacy-src", "legacy-dst", "", "", "", "")
-	session.ObserveOuterFlow(traffictrace.OuterFlowObservation{OuterConnID: "outer-1", Flow: postFlow})
+	session.ObserveOuterFlow(traffictrace.OuterFlowObservation{
+		OuterConnID: "outer-1", Flow: postFlow,
+		Adapter: traffictrace.AdapterReference{
+			SnapshotID: "snapshot-1", ConfigGeneration: 7,
+			AdapterInstanceID: "adapter-1", Protocol: "ss",
+			BehaviorFingerprint: "behavior-1",
+		},
+	})
 	session.ProxyDial("proxy", "ss", "proxy.example:8443", EndpointInfo{Local: "outer-1", Remote: "logical.example:8443", Scope: "logical"})
 	session.Close(0, 0, StatusClosed, "", nil)
 	events := decodeEvents(t, output.Bytes())
@@ -32,6 +39,13 @@ func TestTCPEventsLinkNormalizedPreAndPostFlows(t *testing.T) {
 	}
 	if events[1].OutSrc != "203.0.113.10:3000" || events[1].OutDst != "203.0.113.20:8443" {
 		t.Fatalf("tcp legacy endpoints diverged from post-flow: %+v", events[1])
+	}
+	for _, traceEvent := range events[1:3] {
+		if traceEvent.SnapshotID != "snapshot-1" || traceEvent.ConfigGeneration != 7 ||
+			traceEvent.AdapterInstanceID != "adapter-1" || traceEvent.AdapterProtocol != "ss" ||
+			traceEvent.BehaviorFingerprint != "behavior-1" {
+			t.Fatalf("adapter semantics reference missing: %+v", traceEvent)
+		}
 	}
 }
 

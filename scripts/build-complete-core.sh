@@ -29,6 +29,36 @@ trap cleanup EXIT
 
 commit="$(git rev-parse HEAD)"
 short_commit="$(git rev-parse --short=12 HEAD)"
+source_paths=()
+while IFS= read -r -d '' source_path; do
+  source_paths+=("$source_path")
+done < <(
+  git ls-files -z --cached -- \
+    . ':(exclude)dist/**' ':(exclude)bin/**'
+)
+if ((${#source_paths[@]} == 0)); then
+  echo "error: no source inputs found for build identity" >&2
+  exit 2
+fi
+
+dirty=false
+if [[ -n "$(git status --porcelain=v1 --untracked-files=normal -- \
+  . ':(exclude)dist/**' ':(exclude)bin/**')" ]]; then
+  dirty=true
+fi
+source_tree_digest="$(
+  for source_path in "${source_paths[@]}"; do
+    printf '%s\0' "$source_path"
+    sha256sum -- "$source_path"
+  done | sha256sum | awk '{print $1}'
+)"
+dependency_lock_digest="$(sha256sum go.sum | awk '{print $1}')"
+build_manifest_digest="$(
+  {
+    sha256sum scripts/build-complete-core.sh
+    sha256sum Makefile
+  } | sha256sum | awk '{print $1}'
+)"
 source_epoch="${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}"
 if [[ ! "$source_epoch" =~ ^[0-9]+$ ]]; then
   echo "error: SOURCE_DATE_EPOCH must be an integer Unix timestamp" >&2
@@ -36,7 +66,14 @@ if [[ ! "$source_epoch" =~ ^[0-9]+$ ]]; then
 fi
 build_time="$(date -u --date="@${source_epoch}" '+%Y-%m-%dT%H:%M:%SZ')"
 version="traffictracer-complete-${short_commit}"
-ldflags="-X 'github.com/metacubex/mihomo/constant.Version=${version}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${build_time}' -w -s -buildid="
+ldflags="-X 'github.com/metacubex/mihomo/constant.Version=${version}' \
+  -X 'github.com/metacubex/mihomo/constant.BuildTime=${build_time}' \
+  -X 'github.com/metacubex/mihomo/constant.BuildRevision=${commit}' \
+  -X 'github.com/metacubex/mihomo/constant.BuildDirty=${dirty}' \
+  -X 'github.com/metacubex/mihomo/constant.SourceTreeDigest=sha256:${source_tree_digest}' \
+  -X 'github.com/metacubex/mihomo/constant.DependencyLockDigest=sha256:${dependency_lock_digest}' \
+  -X 'github.com/metacubex/mihomo/constant.BuildManifestDigest=sha256:${build_manifest_digest}' \
+  -w -s -buildid="
 
 echo "Building ${version} (${commit})..."
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1 \

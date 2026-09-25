@@ -14,6 +14,7 @@
     "carrier_lifecycle",
     "logical_carrier_binding",
     "multi_path_carrier",
-    "protocol_snapshot"
+    "protocol_snapshot",
+    "runtime_proxy_semantics"
   ]
 }

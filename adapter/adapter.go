@@ -15,9 +15,11 @@ import (
 
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/queue"
+	"github.com/metacubex/mihomo/common/traffictrace"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/dialer"
+	"github.com/metacubex/mihomo/component/proxysemantics"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 	"github.com/puzpuzpuz/xsync/v3"
@@ -36,9 +38,10 @@ type internalProxyState struct {
 
 type Proxy struct {
 	C.ProxyAdapter
-	alive   atomic.Bool
-	history *queue.Queue[C.DelayHistory]
-	extra   *xsync.MapOf[string, *internalProxyState]
+	alive     atomic.Bool
+	history   *queue.Queue[C.DelayHistory]
+	extra     *xsync.MapOf[string, *internalProxyState]
+	semantics *proxysemantics.Snapshot
 }
 
 // Adapter implements C.Proxy
@@ -64,6 +67,7 @@ func (p *Proxy) Dial(metadata *C.Metadata) (C.Conn, error) {
 
 // DialContext implements C.ProxyAdapter
 func (p *Proxy) DialContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (C.Conn, error) {
+	ctx = traffictrace.WithAdapterReference(ctx, p.semanticsReference())
 	conn, err := p.ProxyAdapter.DialContext(ctx, metadata, opts...)
 	return conn, err
 }
@@ -77,6 +81,7 @@ func (p *Proxy) DialUDP(metadata *C.Metadata) (C.PacketConn, error) {
 
 // ListenPacketContext implements C.ProxyAdapter
 func (p *Proxy) ListenPacketContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (C.PacketConn, error) {
+	ctx = traffictrace.WithAdapterReference(ctx, p.semanticsReference())
 	pc, err := p.ProxyAdapter.ListenPacketContext(ctx, metadata, opts...)
 	return pc, err
 }
@@ -291,11 +296,35 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 	return
 }
 func NewProxy(adapter C.ProxyAdapter) *Proxy {
+	return newProxy(adapter, nil)
+}
+
+func NewProxyWithSemantics(adapter C.ProxyAdapter, snapshot proxysemantics.Snapshot) *Proxy {
+	return newProxy(adapter, &snapshot)
+}
+
+func newProxy(adapter C.ProxyAdapter, snapshot *proxysemantics.Snapshot) *Proxy {
 	return &Proxy{
 		ProxyAdapter: adapter,
 		history:      queue.New[C.DelayHistory](defaultHistoriesNum),
 		alive:        atomic.NewBool(true),
-		extra:        xsync.NewMapOf[string, *internalProxyState]()}
+		extra:        xsync.NewMapOf[string, *internalProxyState](),
+		semantics:    snapshot,
+	}
+}
+
+func (p *Proxy) TrafficTraceSemantics() proxysemantics.Snapshot {
+	if p.semantics == nil {
+		return proxysemantics.Snapshot{}
+	}
+	return proxysemantics.Clone(*p.semantics)
+}
+
+func (p *Proxy) semanticsReference() traffictrace.AdapterReference {
+	if p.semantics == nil {
+		return traffictrace.AdapterReference{}
+	}
+	return p.semantics.Reference()
 }
 
 func urlToMetadata(rawURL string) (addr C.Metadata, err error) {

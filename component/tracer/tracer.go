@@ -86,6 +86,11 @@ type event struct {
 	ProxyType             string                   `json:"proxy_type,omitempty"`
 	LeafProxy             string                   `json:"leaf_proxy,omitempty"`
 	LeafProxyType         string                   `json:"leaf_proxy_type,omitempty"`
+	SnapshotID            string                   `json:"snapshot_id,omitempty"`
+	ConfigGeneration      uint64                   `json:"config_generation,omitempty"`
+	AdapterInstanceID     string                   `json:"adapter_instance_id,omitempty"`
+	AdapterProtocol       string                   `json:"adapter_protocol,omitempty"`
+	BehaviorFingerprint   string                   `json:"behavior_fingerprint,omitempty"`
 	EgressOutcome         string                   `json:"egress_outcome,omitempty"`
 	ProxyAddr             string                   `json:"proxy_addr,omitempty"`
 	OutSrc                string                   `json:"out_src,omitempty"`
@@ -185,6 +190,10 @@ func (t *Tracer) writeCarrierLifecycle(lifecycle traffictrace.CarrierLifecycleOb
 		CarrierGeneration: observation.Generation,
 		CarrierProtocol:   observation.Protocol,
 		CarrierPaths:      append([]traffictrace.FlowTuple(nil), observation.Paths...),
+		SnapshotID:        observation.Adapter.SnapshotID, ConfigGeneration: observation.Adapter.ConfigGeneration,
+		AdapterInstanceID:   observation.Adapter.AdapterInstanceID,
+		AdapterProtocol:     observation.Adapter.Protocol,
+		BehaviorFingerprint: observation.Adapter.BehaviorFingerprint,
 	})
 }
 
@@ -552,6 +561,9 @@ func (s *TCPSession) ProxyDialWithLeaf(proxy, proxyType, leafProxy, leafProxyTyp
 		CarrierGeneration: outer.Generation, CarrierProtocol: carrierProtocol,
 		CarrierPaths: carrierPaths, CarrierProtocolSource: protocolSource,
 		CarrierPathsSource: pathsSource,
+		SnapshotID:         outer.Adapter.SnapshotID, ConfigGeneration: outer.Adapter.ConfigGeneration,
+		AdapterInstanceID: outer.Adapter.AdapterInstanceID, AdapterProtocol: outer.Adapter.Protocol,
+		BehaviorFingerprint: outer.Adapter.BehaviorFingerprint,
 	})
 	if outerConnID != "" {
 		s.tracer.writeTo(s.sink, event{
@@ -564,6 +576,9 @@ func (s *TCPSession) ProxyDialWithLeaf(proxy, proxyType, leafProxy, leafProxyTyp
 			CarrierGeneration: outer.Generation, CarrierProtocol: carrierProtocol,
 			CarrierPaths: carrierPaths, CarrierProtocolSource: protocolSource,
 			CarrierPathsSource: pathsSource,
+			SnapshotID:         outer.Adapter.SnapshotID, ConfigGeneration: outer.Adapter.ConfigGeneration,
+			AdapterInstanceID: outer.Adapter.AdapterInstanceID, AdapterProtocol: outer.Adapter.Protocol,
+			BehaviorFingerprint: outer.Adapter.BehaviorFingerprint,
 		})
 	}
 }
@@ -673,6 +688,9 @@ func (s *UDPSession) ProxyDialWithLeaf(proxy, proxyType, leafProxy, leafProxyTyp
 		CarrierGeneration: outer.Generation, CarrierProtocol: carrierProtocol,
 		CarrierPaths: carrierPaths, CarrierProtocolSource: protocolSource,
 		CarrierPathsSource: pathsSource,
+		SnapshotID:         outer.Adapter.SnapshotID, ConfigGeneration: outer.Adapter.ConfigGeneration,
+		AdapterInstanceID: outer.Adapter.AdapterInstanceID, AdapterProtocol: outer.Adapter.Protocol,
+		BehaviorFingerprint: outer.Adapter.BehaviorFingerprint,
 	})
 	if outerConnID != "" {
 		s.tracer.writeTo(s.sink, event{
@@ -685,6 +703,9 @@ func (s *UDPSession) ProxyDialWithLeaf(proxy, proxyType, leafProxy, leafProxyTyp
 			CarrierGeneration: outer.Generation, CarrierProtocol: carrierProtocol,
 			CarrierPaths: carrierPaths, CarrierProtocolSource: protocolSource,
 			CarrierPathsSource: pathsSource,
+			SnapshotID:         outer.Adapter.SnapshotID, ConfigGeneration: outer.Adapter.ConfigGeneration,
+			AdapterInstanceID: outer.Adapter.AdapterInstanceID, AdapterProtocol: outer.Adapter.Protocol,
+			BehaviorFingerprint: outer.Adapter.BehaviorFingerprint,
 		})
 	}
 }

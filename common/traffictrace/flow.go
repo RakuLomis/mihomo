@@ -27,6 +27,14 @@ type FlowTuple struct {
 	Shared   bool   `json:"shared,omitempty"`
 }
 
+type AdapterReference struct {
+	SnapshotID          string
+	ConfigGeneration    uint64
+	AdapterInstanceID   string
+	Protocol            string
+	BehaviorFingerprint string
+}
+
 type OuterFlowObservation struct {
 	OuterConnID string
 	Flow        FlowTuple
@@ -34,6 +42,7 @@ type OuterFlowObservation struct {
 	Generation  uint64
 	Protocol    string
 	Paths       []FlowTuple
+	Adapter     AdapterReference
 }
 
 func (o OuterFlowObservation) Clone() OuterFlowObservation {

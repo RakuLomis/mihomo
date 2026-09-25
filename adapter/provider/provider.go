@@ -362,6 +362,7 @@ func NewProxiesParser(filter string, excludeFilter string, excludeType string, d
 
 		proxies := []C.Proxy{}
 		proxiesSet := map[string]struct{}{}
+		configGeneration := adapter.NextProxyConfigGeneration()
 		for _, filterReg := range filterRegs {
 			for idx, mapping := range schema.Proxies {
 				if nil != excludeTypeArray && len(excludeTypeArray) > 0 {
@@ -441,7 +442,7 @@ func NewProxiesParser(filter string, excludeFilter string, excludeType string, d
 					}
 				}
 
-				proxy, err := adapter.ParseProxy(mapping)
+				proxy, err := adapter.ParseProxyWithGeneration(mapping, configGeneration)
 				if err != nil {
 					return nil, fmt.Errorf("proxy %d error: %w", idx, err)
 				}

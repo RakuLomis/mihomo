@@ -23,6 +23,7 @@ const (
 	CapabilityCarrierBinding   CapabilityName = "logical_carrier_binding"
 	CapabilityMultiPathCarrier CapabilityName = "multi_path_carrier"
 	CapabilityProtocolSnapshot CapabilityName = "protocol_snapshot"
+	CapabilityRuntimeSemantics CapabilityName = "runtime_proxy_semantics"
 )
 
 // Capabilities is the stable response body for tracing feature discovery.
@@ -44,6 +45,7 @@ type Capabilities struct {
 	SupportsCarrierBinding   bool `json:"supports_logical_carrier_binding"`
 	SupportsMultiPathCarrier bool `json:"supports_multi_path_carrier"`
 	SupportsProtocolSnapshot bool `json:"supports_protocol_snapshot"`
+	SupportsRuntimeSemantics bool `json:"supports_runtime_proxy_semantics"`
 }
 
 func CurrentCapabilities() Capabilities {
@@ -63,5 +65,6 @@ func CurrentCapabilities() Capabilities {
 		SupportsCarrierBinding:   true,
 		SupportsMultiPathCarrier: true,
 		SupportsProtocolSnapshot: true,
+		SupportsRuntimeSemantics: true,
 	}
 }

@@ -1,8 +1,13 @@
 package constant
 
 var (
-	Meta       = true
-	Version    = "1.10.0"
-	BuildTime  = "unknown time"
-	MihomoName = "mihomo"
+	Meta                 = true
+	Version              = "1.10.0"
+	BuildTime            = "unknown time"
+	MihomoName           = "mihomo"
+	BuildRevision        = ""
+	BuildDirty           = ""
+	SourceTreeDigest     = ""
+	DependencyLockDigest = ""
+	BuildManifestDigest  = ""
 )

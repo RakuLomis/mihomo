@@ -837,8 +837,9 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 	proxyList = append(proxyList, "DIRECT", "REJECT")
 
 	// parse proxy
+	configGeneration := adapter.NextProxyConfigGeneration()
 	for idx, mapping := range proxiesConfig {
-		proxy, err := adapter.ParseProxy(mapping)
+		proxy, err := adapter.ParseProxyWithGeneration(mapping, configGeneration)
 		if err != nil {
 			return nil, nil, fmt.Errorf("proxy %d: %w", idx, err)
 		}

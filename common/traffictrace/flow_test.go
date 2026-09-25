@@ -46,7 +46,11 @@ func (o *recordingObserver) ObserveOuterFlow(observation OuterFlowObservation) {
 
 func TestObserveOuterFlowFromContext(t *testing.T) {
 	observer := &recordingObserver{}
-	ctx := WithObserver(context.Background(), observer)
+	reference := AdapterReference{
+		SnapshotID: "snapshot-1", ConfigGeneration: 3,
+		AdapterInstanceID: "adapter-1", Protocol: "vless", BehaviorFingerprint: "behavior-1",
+	}
+	ctx := WithAdapterReference(WithObserver(context.Background(), observer), reference)
 	ObserveOuterFlow(ctx, "tcp", &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 2000}, &net.TCPAddr{IP: net.ParseIP("198.51.100.1"), Port: 443}, "dialer_socket")
 	got := observer.observation
 	if got.OuterConnID == "" || !got.Flow.Complete || got.Flow.Scope != "physical" || got.Flow.Source != "dialer_socket" {
@@ -54,6 +58,9 @@ func TestObserveOuterFlowFromContext(t *testing.T) {
 	}
 	if got.Relation != CarrierRelationCreated || got.Generation != 1 {
 		t.Fatalf("unexpected carrier metadata: %+v", got)
+	}
+	if got.Adapter != reference {
+		t.Fatalf("adapter reference was not captured: %+v", got.Adapter)
 	}
 }
 

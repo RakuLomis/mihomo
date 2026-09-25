@@ -7,8 +7,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
-
+	"github.com/metacubex/mihomo/component/proxysemantics"
 	"github.com/metacubex/mihomo/component/tracer"
+	"github.com/metacubex/mihomo/tunnel"
 )
 
 type tracingInfo struct {
@@ -26,10 +27,15 @@ type tracingPatch struct {
 	SessionID *string `json:"session_id,omitempty"`
 }
 
+type proxySemanticsRequest struct {
+	Name string `json:"name"`
+}
+
 func experimentalRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/tracing", getTracing)
 	r.Get("/tracing/capabilities", getTracingCapabilities)
+	r.Post("/tracing/proxy-semantics", postProxySemantics)
 	r.Post("/tracing/barrier", postTracingBarrier)
 	r.Patch("/tracing", patchTracing)
 	return r
@@ -41,6 +47,34 @@ func getTracing(w http.ResponseWriter, r *http.Request) {
 
 func getTracingCapabilities(w http.ResponseWriter, r *http.Request) {
 	render.JSON(w, r, tracer.CurrentCapabilities())
+}
+
+func postProxySemantics(w http.ResponseWriter, r *http.Request) {
+	var request proxySemanticsRequest
+	if err := render.DecodeJSON(r.Body, &request); err != nil || request.Name == "" {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, newError("missing proxy name"))
+		return
+	}
+	proxy, exists := tunnel.ProxiesWithProviders()[request.Name]
+	if !exists {
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, ErrNotFound)
+		return
+	}
+	provider, ok := proxy.(proxysemantics.Provider)
+	if !ok {
+		render.Status(r, http.StatusNotImplemented)
+		render.JSON(w, r, newError("proxy runtime semantics unavailable"))
+		return
+	}
+	snapshot := provider.TrafficTraceSemantics()
+	if snapshot.SnapshotID == "" {
+		render.Status(r, http.StatusNotImplemented)
+		render.JSON(w, r, newError("proxy runtime semantics unavailable"))
+		return
+	}
+	render.JSON(w, r, snapshot)
 }
 
 func postTracingBarrier(w http.ResponseWriter, r *http.Request) {

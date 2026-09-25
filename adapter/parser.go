@@ -11,6 +11,10 @@ import (
 )
 
 func ParseProxy(mapping map[string]any) (C.Proxy, error) {
+	return ParseProxyWithGeneration(mapping, NextProxyConfigGeneration())
+}
+
+func ParseProxyWithGeneration(mapping map[string]any, generation uint64) (C.Proxy, error) {
 	decoder := structure.NewDecoder(structure.Option{TagName: "proxy", WeaklyTypedInput: true, KeyReplacer: structure.DefaultKeyReplacer})
 	proxyType, existType := mapping["type"].(string)
 	if !existType {
@@ -18,8 +22,9 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 	}
 
 	var (
-		proxy C.ProxyAdapter
-		err   error
+		proxy           C.ProxyAdapter
+		err             error
+		semanticsOption any
 	)
 	switch proxyType {
 	case "ss":
@@ -29,6 +34,7 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 			break
 		}
 		proxy, err = outbound.NewShadowSocks(*ssOption)
+		semanticsOption = ssOption
 	case "ssr":
 		ssrOption := &outbound.ShadowSocksROption{}
 		err = decoder.Decode(mapping, ssrOption)
@@ -64,6 +70,7 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 			break
 		}
 		proxy, err = outbound.NewVmess(*vmessOption)
+		semanticsOption = vmessOption
 	case "vless":
 		vlessOption := &outbound.VlessOption{ClientFingerprint: tlsC.GetGlobalFingerprint()}
 		err = decoder.Decode(mapping, vlessOption)
@@ -71,6 +78,7 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 			break
 		}
 		proxy, err = outbound.NewVless(*vlessOption)
+		semanticsOption = vlessOption
 	case "snell":
 		snellOption := &outbound.SnellOption{}
 		err = decoder.Decode(mapping, snellOption)
@@ -85,6 +93,7 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 			break
 		}
 		proxy, err = outbound.NewTrojan(*trojanOption)
+		semanticsOption = trojanOption
 	case "hysteria":
 		hyOption := &outbound.HysteriaOption{}
 		err = decoder.Decode(mapping, hyOption)
@@ -99,6 +108,7 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 			break
 		}
 		proxy, err = outbound.NewHysteria2(*hyOption)
+		semanticsOption = hyOption
 	case "wireguard":
 		wgOption := &outbound.WireGuardOption{}
 		err = decoder.Decode(mapping, wgOption)
@@ -155,6 +165,7 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 			break
 		}
 		proxy, err = outbound.NewAnyTLS(*anytlsOption)
+		semanticsOption = anytlsOption
 	default:
 		return nil, fmt.Errorf("unsupport proxy type: %s", proxyType)
 	}
@@ -163,8 +174,9 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 		return nil, err
 	}
 
+	var muxOption *outbound.SingMuxOption
 	if muxMapping, muxExist := mapping["smux"].(map[string]any); muxExist {
-		muxOption := &outbound.SingMuxOption{}
+		muxOption = &outbound.SingMuxOption{}
 		err = decoder.Decode(muxMapping, muxOption)
 		if err != nil {
 			return nil, err
@@ -177,5 +189,6 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 		}
 	}
 
-	return NewProxy(proxy), nil
+	snapshot := buildProxySemanticsWithGeneration(proxyType, mapping, semanticsOption, muxOption, generation)
+	return NewProxyWithSemantics(proxy, snapshot), nil
 }

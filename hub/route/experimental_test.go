@@ -11,7 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/component/tracer"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/tunnel"
 )
 
 func resetTracing(t *testing.T) {
@@ -213,5 +216,58 @@ func TestLegacyTracingPayloadRemainsCompatible(t *testing.T) {
 	}
 	if value, ok := raw["session_id"]; !ok || value != "" {
 		t.Fatalf("session_id must be explicit in tracing state: %v", raw)
+	}
+}
+
+func TestGetProxySemanticsReturnsRuntimeBoundRedactedSnapshot(t *testing.T) {
+	originalProxies := tunnel.Proxies()
+	originalProviders := tunnel.Providers()
+	t.Cleanup(func() {
+		tunnel.UpdateProxies(originalProxies, originalProviders)
+	})
+
+	const (
+		name     = "private-node-name"
+		server   = "private.proxy.example"
+		password = "private-password"
+	)
+	proxy, err := adapter.ParseProxy(map[string]any{
+		"type": "ss", "name": name, "server": server, "port": 443,
+		"password": password, "cipher": "aes-128-gcm",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel.UpdateProxies(map[string]C.Proxy{name: proxy}, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/tracing/proxy-semantics", strings.NewReader(`{"name":"`+name+`"}`))
+	resp := httptest.NewRecorder()
+	experimentalRouter().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	body := resp.Body.String()
+	for _, secret := range []string{name, server, password} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("response leaked %q: %s", secret, body)
+		}
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"snapshot_id", "config_generation", "adapter_instance_id", "behavior_fingerprint", "build"} {
+		if _, exists := snapshot[key]; !exists {
+			t.Errorf("response missing %q: %s", key, body)
+		}
+	}
+}
+
+func TestPostProxySemanticsRequiresProxyName(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/tracing/proxy-semantics", strings.NewReader(`{"name":""}`))
+	resp := httptest.NewRecorder()
+	experimentalRouter().ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
