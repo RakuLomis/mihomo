@@ -119,6 +119,13 @@ func (s *Stream) RemoteAddr() net.Addr {
 	return nil
 }
 
+// CarrierSessionID identifies the physical AnyTLS session carrying this
+// logical stream. It is stable for the session lifetime and intentionally
+// distinct from the stream ID, which changes for every logical connection.
+func (s *Stream) CarrierSessionID() uint64 {
+	return s.sess.seq
+}
+
 // HandshakeFailure should be called when Server fail to create outbound proxy
 func (s *Stream) HandshakeFailure(err error) error {
 	var once bool

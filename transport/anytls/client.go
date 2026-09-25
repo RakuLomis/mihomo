@@ -26,6 +26,7 @@ type ClientConfig struct {
 	Server                   M.Socksaddr
 	Dialer                   N.Dialer
 	TLSConfig                *vmess.TLSConfig
+	SessionClosed            func(uint64)
 }
 
 type Client struct {
@@ -47,7 +48,7 @@ func NewClient(ctx context.Context, config ClientConfig) *Client {
 	}
 	// Initialize the padding state of this client
 	padding.UpdatePaddingScheme(padding.DefaultPaddingScheme, &c.padding)
-	c.sessionClient = session.NewClient(ctx, c.CreateOutboundTLSConnection, &c.padding, config.IdleSessionCheckInterval, config.IdleSessionTimeout, config.MinIdleSession)
+	c.sessionClient = session.NewClient(ctx, c.CreateOutboundTLSConnection, &c.padding, config.IdleSessionCheckInterval, config.IdleSessionTimeout, config.MinIdleSession, config.SessionClosed)
 	return c
 }
 

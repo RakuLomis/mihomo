@@ -299,7 +299,9 @@ cat /tmp/trace.jsonl | jq -r 'select(.type=="udp_out") | [.conn_key, .len] | @ts
 
 6. **多路复用协议**: TUIC、Hysteria、HTTP/2、gRPC、AnyTLS 等可能让多个逻辑会话共享物理连接。此时多个事件出现相同 `outer_conn_id` 或 `post_flow.key` 是正常现象；`shared: true` 明确表示不能声称一条逻辑流独占该外层五元组。
 
-7. **文件轮转**: 切换 output 可能把一个长连接的生命周期分散到两个文件。轮转或切换前应结合 `conn_id`/`conn_key` 与 `event_seq` 汇总分析。
+7. **AnyTLS UDP-over-TCP**: UDP 逻辑流通过 UOT 进入 AnyTLS stream 时，`pre_flow.network` 可以是 `udp`，而 `carrier_paths[].network` 是 `tcp`。每个逻辑流通过 `logical_carrier_bind` 引用稳定的 AnyTLS Session carrier；多个逻辑流可以共享同一 carrier，不能将 carrier 加密字节唯一分摊给单条 UDP 流。
+
+8. **文件轮转**: 切换 output 可能把一个长连接的生命周期分散到两个文件。轮转或切换前应结合 `conn_id`/`conn_key` 与 `event_seq` 汇总分析。
 
 ---
 

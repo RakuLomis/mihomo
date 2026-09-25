@@ -134,3 +134,41 @@ func TestGroupLeafTypeControlsSharedPostFlowAndOutcome(t *testing.T) {
 		t.Fatalf("unexpected leaf outcome: %+v", dial)
 	}
 }
+
+func TestAnyTLSUDPLogicalFlowUsesSharedTCPCarrier(t *testing.T) {
+	var output bytes.Buffer
+	tr := newTracer(&output)
+	tr.enabled.Store(true)
+	pre := testFlow("udp", "198.18.0.1:49351", "203.0.113.20:443")
+	carrier := testFlow("tcp", "192.0.2.10:51000", "198.51.100.20:8445")
+	carrier.Source, carrier.Scope, carrier.Shared = "dialer_socket", "physical", true
+	session := tr.beginUDPWithFlow(
+		"udp-anytls", pre, "legacy-src", "legacy-dst", "", "", "", "",
+	)
+	session.ObserveOuterFlow(traffictrace.OuterFlowObservation{
+		OuterConnID: "anytls-carrier-1",
+		Flow:        carrier,
+		Relation:    traffictrace.CarrierRelationReused,
+		Generation:  3,
+		Protocol:    "anytls",
+		Paths:       []traffictrace.FlowTuple{carrier},
+	})
+	session.ProxyDialWithLeaf(
+		"Yu-VPS", "Selector", "out-anytls-tls", "AnyTLS",
+		"proxy.example:8445", EndpointInfo{},
+	)
+	session.Close(100, 200, StatusClosed, "", nil)
+
+	events := decodeEvents(t, output.Bytes())
+	dial := events[1]
+	if dial.PreFlow != nil {
+		t.Fatalf("dial event must not duplicate the connect pre-flow: %+v", dial)
+	}
+	if dial.PostFlow == nil || dial.PostFlow.Network != "tcp" ||
+		!dial.PostFlow.Complete || !dial.PostFlow.Shared {
+		t.Fatalf("AnyTLS UDP did not retain its shared TCP carrier: %+v", dial)
+	}
+	if dial.CarrierID != "anytls-carrier-1" || dial.CarrierProtocol != "anytls" {
+		t.Fatalf("AnyTLS carrier metadata missing: %+v", dial)
+	}
+}

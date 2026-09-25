@@ -33,15 +33,17 @@ type Client struct {
 
 	idleSessionTimeout time.Duration
 	minIdleSession     int
+	sessionClosed      func(uint64)
 }
 
-func NewClient(ctx context.Context, dialOut util.DialOutFunc, _padding *atomic.TypedValue[*padding.PaddingFactory], idleSessionCheckInterval, idleSessionTimeout time.Duration, minIdleSession int) *Client {
+func NewClient(ctx context.Context, dialOut util.DialOutFunc, _padding *atomic.TypedValue[*padding.PaddingFactory], idleSessionCheckInterval, idleSessionTimeout time.Duration, minIdleSession int, sessionClosed func(uint64)) *Client {
 	c := &Client{
 		sessions:           make(map[uint64]*Session),
 		dialOut:            dialOut,
 		padding:            _padding,
 		idleSessionTimeout: idleSessionTimeout,
 		minIdleSession:     minIdleSession,
+		sessionClosed:      sessionClosed,
 	}
 	if idleSessionCheckInterval <= time.Second*5 {
 		idleSessionCheckInterval = time.Second * 30
@@ -135,6 +137,10 @@ func (c *Client) createSession(ctx context.Context) (*Session, error) {
 		c.sessionsLock.Lock()
 		delete(c.sessions, session.seq)
 		c.sessionsLock.Unlock()
+
+		if c.sessionClosed != nil {
+			c.sessionClosed(session.seq)
+		}
 	}
 
 	c.sessionsLock.Lock()
